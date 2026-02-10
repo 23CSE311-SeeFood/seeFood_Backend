@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Canteen {
+  id      Int           @id @default(autoincrement())
+  name    String
+  ratings Float?
+  items   CanteenItem[]
+}
+
+model CanteenItem {
+  id        Int     @id @default(autoincrement())
+  name      String
+  price     Float
+  rating    Float?
+  isVeg     Boolean
+  canteenId Int
+  canteen   Canteen @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+
+  @@index([canteenId])
+}
