@@ -33,4 +33,5 @@ model Student {
   number     String
   branch     String?
   rollNumber String?
+  password   String
 }
