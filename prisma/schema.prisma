@@ -12,16 +12,18 @@ model Canteen {
   name    String
   ratings Float?
   items   CanteenItem[]
+  carts   Cart[]
 }
 
 model CanteenItem {
-  id        Int     @id @default(autoincrement())
+  id        Int        @id @default(autoincrement())
   name      String
   price     Float
   rating    Float?
   isVeg     Boolean
   canteenId Int
-  canteen   Canteen @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  cartItems CartItem[]
 
   @@index([canteenId])
 }
@@ -34,4 +36,33 @@ model Student {
   branch     String?
   rollNumber String?
   password   String
+  carts      Cart[]
+}
+
+model Cart {
+  id        Int        @id @default(autoincrement())
+  studentId Int
+  canteenId Int
+  total     Float      @default(0)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  student   Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+
+  @@unique([studentId])
+  @@index([canteenId])
+}
+
+model CartItem {
+  id           Int         @id @default(autoincrement())
+  cartId       Int
+  canteenItemId Int
+  quantity     Int         @default(1)
+  cart         Cart        @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  canteenItem  CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, canteenItemId])
+  @@index([cartId])
+  @@index([canteenItemId])
 }
