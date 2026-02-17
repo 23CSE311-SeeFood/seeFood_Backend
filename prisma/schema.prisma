@@ -15,6 +15,7 @@ model Canteen {
   items   CanteenItem[]
   carts   Cart[]
   orders  Order[]
+  cashiers Cashier[]
 }
 
 model CanteenItem {
@@ -42,6 +43,28 @@ model Student {
   password   String
   carts      Cart[]
   orders     Order[]
+}
+
+model Admin {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cashier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  canteenId Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  canteen   Canteen  @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+
+  @@index([canteenId])
 }
 
 model Cart {

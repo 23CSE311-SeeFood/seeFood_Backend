@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const cors = require("cors");
 const prisma = require("./lib/prisma");
 const canteensRouter = require("./routes/canteens");
 const itemsRouter = require("./routes/items");
@@ -8,6 +9,17 @@ const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
 
 const app = express();
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  })
+);
 const port = process.env.PORT || 3000;
 
 app.use(
