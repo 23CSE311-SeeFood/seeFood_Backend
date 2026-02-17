@@ -11,6 +11,7 @@ model Canteen {
   id      Int           @id @default(autoincrement())
   name    String
   ratings Float?
+  imageUrl String?
   items   CanteenItem[]
   carts   Cart[]
   orders  Order[]
@@ -22,6 +23,7 @@ model CanteenItem {
   price     Float
   rating    Float?
   isVeg     Boolean
+  imageUrl  String?
   canteenId Int
   canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   cartItems CartItem[]
