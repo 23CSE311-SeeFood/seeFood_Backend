@@ -1,7 +1,6 @@
 .env
 /node_modules
 
-/.github
 # Logs
 logs
 *.log
