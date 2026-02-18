@@ -5,13 +5,21 @@ const prisma = require("../../lib/prisma");
 
 const router = express.Router();
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || "",
-  key_secret: process.env.RAZORPAY_KEY_SECRET || "",
-});
+let razorpayInstance = null;
 
 function isRazorpayReady() {
   return Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+}
+
+function getRazorpay() {
+  if (!isRazorpayReady()) return null;
+  if (!razorpayInstance) {
+    razorpayInstance = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+  }
+  return razorpayInstance;
 }
 
 function parseId(value) {
@@ -32,7 +40,8 @@ async function calculateCartTotal(cartId) {
 }
 
 router.post("/create", async (req, res) => {
-  if (!isRazorpayReady()) {
+  const razorpay = getRazorpay();
+  if (!razorpay) {
     return res.status(500).json({ error: "Razorpay keys not configured" });
   }
 
