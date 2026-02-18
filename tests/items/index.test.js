@@ -74,7 +74,14 @@ describe('Items Routes', () => {
   describe('POST /canteens/:canteenId/items', () => {
     it('should create an item successfully', async () => {
       prisma.canteen.findUnique.mockResolvedValue({ id: 1 });
-      const input = { name: 'New Item', price: 150, rating: 4.0, isVeg: false };
+      const input = {
+        name: 'New Item',
+        price: 150,
+        rating: 4.0,
+        foodType: 'VEG',
+        category: 'RICE',
+        imageUrl: 'http://example.com/image.jpg',
+      };
       const createdItem = { id: 2, ...input, canteenId: 1 };
       prisma.canteenItem.create.mockResolvedValue(createdItem);
 
@@ -89,7 +96,9 @@ describe('Items Routes', () => {
           name: 'New Item',
           price: 150,
           rating: 4.0,
-          isVeg: false,
+          foodType: 'VEG',
+          category: 'RICE',
+          imageUrl: 'http://example.com/image.jpg',
           canteenId: 1,
         },
       });
@@ -97,8 +106,22 @@ describe('Items Routes', () => {
 
     it('should create item with null rating', async () => {
       prisma.canteen.findUnique.mockResolvedValue({ id: 1 });
-      const input = { name: 'Item B', price: 200, isVeg: true };
-      const createdItem = { id: 3, name: 'Item B', price: 200, rating: null, isVeg: true, canteenId: 1 };
+      const input = {
+        name: 'Item B',
+        price: 200,
+        foodType: 'NON_VEG',
+        category: 'DRINKS',
+      };
+      const createdItem = {
+        id: 3,
+        name: 'Item B',
+        price: 200,
+        rating: null,
+        foodType: 'NON_VEG',
+        category: 'DRINKS',
+        imageUrl: null,
+        canteenId: 1,
+      };
       prisma.canteenItem.create.mockResolvedValue(createdItem);
 
       const response = await request(app)
@@ -111,7 +134,9 @@ describe('Items Routes', () => {
           name: 'Item B',
           price: 200,
           rating: null,
-          isVeg: true,
+          foodType: 'NON_VEG',
+          category: 'DRINKS',
+          imageUrl: null,
           canteenId: 1,
         },
       });
@@ -122,7 +147,7 @@ describe('Items Routes', () => {
 
       const response = await request(app)
         .post('/canteens/1/items')
-        .send({ price: 100, isVeg: true });
+        .send({ price: 100, foodType: 'VEG', category: 'RICE' });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'name is required' });
@@ -133,7 +158,7 @@ describe('Items Routes', () => {
 
       const response = await request(app)
         .post('/canteens/1/items')
-        .send({ name: 'Item', isVeg: true });
+        .send({ name: 'Item', foodType: 'VEG', category: 'RICE' });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'price is required' });
@@ -144,27 +169,41 @@ describe('Items Routes', () => {
 
       const response = await request(app)
         .post('/canteens/1/items')
-        .send({ name: 'Item', price: 'abc', isVeg: true });
+        .send({ name: 'Item', price: 'abc', foodType: 'VEG', category: 'RICE' });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'price is required' });
     });
 
-    it('should return 400 if isVeg is not boolean', async () => {
+    it('should return 400 if foodType is invalid', async () => {
       prisma.canteen.findUnique.mockResolvedValue({ id: 1 });
 
       const response = await request(app)
         .post('/canteens/1/items')
-        .send({ name: 'Item', price: 100, isVeg: 'yes' });
+        .send({ name: 'Item', price: 100, foodType: 'MAYBE', category: 'RICE' });
 
       expect(response.status).toBe(400);
-      expect(response.body).toEqual({ error: 'isVeg must be boolean' });
+      expect(response.body).toEqual({ error: 'foodType must be VEG or NON_VEG' });
     });
 
     it('should trim name', async () => {
       prisma.canteen.findUnique.mockResolvedValue({ id: 1 });
-      const input = { name: '  Item Name  ', price: 100, isVeg: true };
-      prisma.canteenItem.create.mockResolvedValue({ id: 4, name: 'Item Name', price: 100, rating: null, isVeg: true, canteenId: 1 });
+      const input = {
+        name: '  Item Name  ',
+        price: 100,
+        foodType: 'VEG',
+        category: 'RICE',
+      };
+      prisma.canteenItem.create.mockResolvedValue({
+        id: 4,
+        name: 'Item Name',
+        price: 100,
+        rating: null,
+        foodType: 'VEG',
+        category: 'RICE',
+        imageUrl: null,
+        canteenId: 1,
+      });
 
       const response = await request(app)
         .post('/canteens/1/items')
@@ -175,7 +214,9 @@ describe('Items Routes', () => {
           name: 'Item Name',
           price: 100,
           rating: null,
-          isVeg: true,
+          foodType: 'VEG',
+          category: 'RICE',
+          imageUrl: null,
           canteenId: 1,
         },
       });
@@ -186,7 +227,7 @@ describe('Items Routes', () => {
 
       const response = await request(app)
         .post('/canteens/999/items')
-        .send({ name: 'Item', price: 100, isVeg: true });
+        .send({ name: 'Item', price: 100, foodType: 'VEG', category: 'RICE' });
 
       expect(response.status).toBe(404);
       expect(response.body).toEqual({ error: 'Canteen not found' });
@@ -198,7 +239,7 @@ describe('Items Routes', () => {
 
       const response = await request(app)
         .post('/canteens/1/items')
-        .send({ name: 'Item', price: 100, isVeg: true });
+        .send({ name: 'Item', price: 100, foodType: 'VEG', category: 'RICE' });
 
       expect(response.status).toBe(500);
       expect(response.body).toEqual({ error: 'Failed to create item' });
