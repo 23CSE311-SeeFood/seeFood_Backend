@@ -23,7 +23,8 @@ model CanteenItem {
   name      String
   price     Float
   rating    Float?
-  isVeg     Boolean
+  foodType  FoodType     @default(VEG)
+  category  ItemCategory @default(OTHER)
   imageUrl  String?
   canteenId Int
   canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
@@ -31,6 +32,20 @@ model CanteenItem {
   orderItems OrderItem[]
 
   @@index([canteenId])
+}
+
+enum FoodType {
+  VEG
+  NON_VEG
+}
+
+enum ItemCategory {
+  RICE
+  CURRIES
+  ICECREAM
+  ROOTI
+  DRINKS
+  OTHER
 }
 
 model Student {
