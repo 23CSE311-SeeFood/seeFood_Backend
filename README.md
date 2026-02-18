@@ -2,53 +2,87 @@
 
 
 
-\## 1. Description
-
-This repository contains the backend implementation of the seeFood application.
-
-It handles data processing, database operations, and API services.
+\## Description
 
 
 
-\## 2. How It Works
+This repository contains the backend implementation of the \*\*seeFood\*\* application.  
 
-1\. Client sends a request to the backend API.
-
-2\. The backend processes the request.
-
-3\. Data is fetched or stored in the database.
-
-4\. Response is sent back to the client.
+It is responsible for handling data processing, database operations, authentication, and API services used by the frontend and mobile applications.
 
 
 
-\## 3. Project Structure
-
-src/ → Backend source code
-
-config/ → Configuration files
-
-routes/ → API route definitions
-
-models/ → Database models
-
-\## 4. Main Features
-
-\- User authentication
-
-\- Data storage and retrieval
-
-\- API services for frontend
+---
 
 
 
-\## 5. Technologies Used
+\## How It Works
 
-\- Node.js
 
-\- Express.js
 
-\- MySQL
+1\. The client (web or mobile) sends a request to the backend API.  
 
-\- REST API
+2\. The backend processes the request logic.  
+
+3\. Data is fetched from or stored in the database.  
+
+4\. A response is sent back to the client.
+
+
+
+---
+
+
+
+\## Project Structure
+
+
+
+\- `src/` – Backend source code  
+
+\- `config/` – Configuration files  
+
+\- `routes/` – API route definitions  
+
+\- `models/` – Database models  
+
+\- `controllers/` – Business logic and request handling  
+
+\- `middlewares/` – Authentication and validation middleware  
+
+
+
+---
+
+
+
+\## Main Features
+
+
+
+\- User authentication and authorization  
+
+\- Data storage and retrieval  
+
+\- RESTful API services for frontend and mobile apps  
+
+
+
+---
+
+
+
+\## Technologies Used
+
+
+
+\- Node.js  
+
+\- Express.js  
+
+\- MySQL  
+
+\- REST API  
+
+
 
