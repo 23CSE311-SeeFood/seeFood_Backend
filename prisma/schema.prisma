@@ -11,9 +11,11 @@ model Canteen {
   id      Int           @id @default(autoincrement())
   name    String
   ratings Float?
+  imageUrl String?
   items   CanteenItem[]
   carts   Cart[]
   orders  Order[]
+  cashiers Cashier[]
 }
 
 model CanteenItem {
@@ -21,13 +23,29 @@ model CanteenItem {
   name      String
   price     Float
   rating    Float?
-  isVeg     Boolean
+  foodType  FoodType     @default(VEG)
+  category  ItemCategory @default(OTHER)
+  imageUrl  String?
   canteenId Int
   canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   cartItems CartItem[]
   orderItems OrderItem[]
 
   @@index([canteenId])
+}
+
+enum FoodType {
+  VEG
+  NON_VEG
+}
+
+enum ItemCategory {
+  RICE
+  CURRIES
+  ICECREAM
+  ROOTI
+  DRINKS
+  OTHER
 }
 
 model Student {
@@ -40,6 +58,28 @@ model Student {
   password   String
   carts      Cart[]
   orders     Order[]
+}
+
+model Admin {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cashier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  canteenId Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  canteen   Canteen  @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+
+  @@index([canteenId])
 }
 
 model Cart {
