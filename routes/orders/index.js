@@ -102,7 +102,9 @@ router.post("/create", async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ error: "Failed to create order" });
+    console.error("Order create failed:", error);
+    const details = process.env.NODE_ENV === "production" ? undefined : error.message;
+    res.status(500).json({ error: "Failed to create order", details });
   }
 });
 
@@ -137,6 +139,7 @@ router.post("/verify", async (req, res) => {
     });
     res.json({ status: "verified", order: updated });
   } catch (error) {
+    console.error("Order verify failed:", error);
     res.status(404).json({ error: "Order not found" });
   }
 });
