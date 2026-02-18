@@ -1,8 +1,8 @@
-\# seeFood Backend
+# seeFood Backend
 
 
 
-\## Description
+## Description
 
 
 
@@ -16,39 +16,17 @@ It is responsible for handling data processing, database operations, authenticat
 
 
 
-\## How It Works
+## How It Works
 
 
 
-1\. The client (web or mobile) sends a request to the backend API.  
+1. The client (web or mobile) sends a request to the backend API.  
 
-2\. The backend processes the request logic.  
+2. The backend processes the request logic.  
 
-3\. Data is fetched from or stored in the database.  
+3. Data is fetched from or stored in the database.  
 
-4\. A response is sent back to the client.
-
-
-
----
-
-
-
-\## Project Structure
-
-
-
-\- `src/` – Backend source code  
-
-\- `config/` – Configuration files  
-
-\- `routes/` – API route definitions  
-
-\- `models/` – Database models  
-
-\- `controllers/` – Business logic and request handling  
-
-\- `middlewares/` – Authentication and validation middleware  
+4. A response is sent back to the client.
 
 
 
@@ -56,15 +34,21 @@ It is responsible for handling data processing, database operations, authenticat
 
 
 
-\## Main Features
+## Project Structure
 
 
 
-\- User authentication and authorization  
+- `src/` – Backend source code  
 
-\- Data storage and retrieval  
+- `config/` – Configuration files  
 
-\- RESTful API services for frontend and mobile apps  
+- `routes/` – API route definitions  
+
+- `models/` – Database models  
+
+- `controllers/` – Business logic and request handling  
+
+- `middlewares/` – Authentication and validation middleware  
 
 
 
@@ -72,17 +56,33 @@ It is responsible for handling data processing, database operations, authenticat
 
 
 
-\## Technologies Used
+## Main Features
 
 
 
-\- Node.js  
+- User authentication and authorization  
 
-\- Express.js  
+- Data storage and retrieval  
 
-\- MySQL  
+- RESTful API services for frontend and mobile apps  
 
-\- REST API  
+
+
+---
+
+
+
+## Technologies Used
+
+
+
+- Node.js  
+
+- Express.js  
+
+- MySQL  
+
+- REST API  
 
 
 
