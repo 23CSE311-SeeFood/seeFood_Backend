@@ -7,6 +7,7 @@ const itemsRouter = require("./routes/items");
 const paymentsRouter = require("./routes/payments");
 const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
+const ordersRouter = require("./routes/orders");
 
 const app = express();
 const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001")
@@ -44,6 +45,7 @@ app.use("/canteens/:canteenId/items", itemsRouter);
 app.use("/payments", paymentsRouter);
 app.use("/auth", authRouter);
 app.use("/cart", cartRouter);
+app.use("/orders", ordersRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found" });
