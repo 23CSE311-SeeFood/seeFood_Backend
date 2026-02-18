@@ -44,15 +44,26 @@ router.post("/", async (req, res) => {
     const canteenId = await ensureCanteen(req, res);
     if (canteenId === null) return;
 
-    const { name, price, rating, isVeg } = req.body;
+    const { name, price, rating, foodType, category, imageUrl } = req.body;
     if (!name || typeof name !== "string") {
       return res.status(400).json({ error: "name is required" });
     }
     if (price === undefined || Number.isNaN(Number(price))) {
       return res.status(400).json({ error: "price is required" });
     }
-    if (typeof isVeg !== "boolean") {
-      return res.status(400).json({ error: "isVeg must be boolean" });
+    if (!foodType || !["VEG", "NON_VEG"].includes(String(foodType))) {
+      return res.status(400).json({ error: "foodType must be VEG or NON_VEG" });
+    }
+    const allowedCategories = [
+      "RICE",
+      "CURRIES",
+      "ICECREAM",
+      "ROOTI",
+      "DRINKS",
+      "OTHER",
+    ];
+    if (!category || !allowedCategories.includes(String(category))) {
+      return res.status(400).json({ error: "invalid category" });
     }
 
     const created = await prisma.canteenItem.create({
@@ -60,7 +71,9 @@ router.post("/", async (req, res) => {
         name: name.trim(),
         price: Number(price),
         rating: rating === undefined ? null : Number(rating),
-        isVeg,
+        foodType: String(foodType),
+        category: String(category),
+        imageUrl: imageUrl ? String(imageUrl).trim() : null,
         canteenId,
       },
     });
@@ -80,7 +93,7 @@ router.put("/:id", async (req, res) => {
       return res.status(400).json({ error: "id must be an integer" });
     }
 
-    const { name, price, rating, isVeg } = req.body;
+    const { name, price, rating, foodType, category, imageUrl } = req.body;
     const data = {};
     if (name !== undefined) {
       if (typeof name !== "string" || !name.trim()) {
@@ -100,11 +113,28 @@ router.put("/:id", async (req, res) => {
       }
       data.rating = Number(rating);
     }
-    if (isVeg !== undefined) {
-      if (typeof isVeg !== "boolean") {
-        return res.status(400).json({ error: "isVeg must be boolean" });
+    if (foodType !== undefined) {
+      if (!["VEG", "NON_VEG"].includes(String(foodType))) {
+        return res.status(400).json({ error: "foodType must be VEG or NON_VEG" });
       }
-      data.isVeg = isVeg;
+      data.foodType = String(foodType);
+    }
+    if (category !== undefined) {
+      const allowedCategories = [
+        "RICE",
+        "CURRIES",
+        "ICECREAM",
+        "ROOTI",
+        "DRINKS",
+        "OTHER",
+      ];
+      if (!allowedCategories.includes(String(category))) {
+        return res.status(400).json({ error: "invalid category" });
+      }
+      data.category = String(category);
+    }
+    if (imageUrl !== undefined) {
+      data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
     }
 
     if (Object.keys(data).length === 0) {

@@ -11,17 +11,142 @@ model Canteen {
   id      Int           @id @default(autoincrement())
   name    String
   ratings Float?
+  imageUrl String?
   items   CanteenItem[]
+  carts   Cart[]
+  orders  Order[]
+  cashiers Cashier[]
 }
 
 model CanteenItem {
-  id        Int     @id @default(autoincrement())
+  id        Int        @id @default(autoincrement())
   name      String
   price     Float
   rating    Float?
-  isVeg     Boolean
+  foodType  FoodType     @default(VEG)
+  category  ItemCategory @default(OTHER)
+  imageUrl  String?
   canteenId Int
-  canteen   Canteen @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  cartItems CartItem[]
+  orderItems OrderItem[]
 
   @@index([canteenId])
+}
+
+enum FoodType {
+  VEG
+  NON_VEG
+}
+
+enum ItemCategory {
+  RICE
+  CURRIES
+  ICECREAM
+  ROOTI
+  DRINKS
+  OTHER
+}
+
+model Student {
+  id         Int     @id @default(autoincrement())
+  name       String
+  email      String  @unique
+  number     String
+  branch     String?
+  rollNumber String?
+  password   String
+  carts      Cart[]
+  orders     Order[]
+}
+
+model Admin {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cashier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  canteenId Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  canteen   Canteen  @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+
+  @@index([canteenId])
+}
+
+model Cart {
+  id        Int        @id @default(autoincrement())
+  studentId Int
+  canteenId Int
+  total     Float      @default(0)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  student   Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+
+  @@unique([studentId])
+  @@index([canteenId])
+}
+
+model CartItem {
+  id           Int         @id @default(autoincrement())
+  cartId       Int
+  canteenItemId Int
+  quantity     Int         @default(1)
+  cart         Cart        @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  canteenItem  CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, canteenItemId])
+  @@index([cartId])
+  @@index([canteenItemId])
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+model Order {
+  id            Int         @id @default(autoincrement())
+  orderId       String      @unique
+  transactionId String?     @unique
+  status        OrderStatus @default(CREATED)
+  total         Float
+  currency      String      @default("INR")
+  studentId     Int
+  canteenId     Int
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  student       Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  canteen       Canteen     @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  items         OrderItem[]
+
+  @@index([studentId])
+  @@index([canteenId])
+}
+
+model OrderItem {
+  id            Int         @id @default(autoincrement())
+  orderId       Int
+  canteenItemId Int
+  quantity      Int
+  price         Float
+  total         Float
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([canteenItemId])
 }
