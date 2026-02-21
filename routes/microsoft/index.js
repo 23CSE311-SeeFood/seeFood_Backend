@@ -47,20 +47,62 @@ function getConfig() {
     redirectUri: process.env.MS_REDIRECT_URI || "",
     scopes: process.env.MS_SCOPES || DEFAULT_SCOPES,
     appRedirect: process.env.MS_APP_REDIRECT || "",
+    redirectAllowlist: process.env.MS_APP_REDIRECT_ALLOWLIST || "",
   };
 }
 
+function parseRedirect(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedRedirect(candidate, allowlist) {
+  for (const allowed of allowlist) {
+    if (
+      candidate.protocol === allowed.protocol &&
+      candidate.host === allowed.host &&
+      candidate.pathname.startsWith(allowed.pathname)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 router.get("/login", (req, res) => {
-  const { clientId, redirectUri, scopes, appRedirect } = getConfig();
+  const { clientId, redirectUri, scopes, appRedirect, redirectAllowlist } = getConfig();
   if (!clientId || !redirectUri) {
     return res.status(500).json({ error: "Microsoft OAuth not configured" });
   }
 
-  const requestedRedirect = String(req.query.redirect || "").trim();
-  const finalRedirect = requestedRedirect || appRedirect;
-
-  if (!finalRedirect) {
+  if (!appRedirect) {
     return res.status(400).json({ error: "Missing app redirect" });
+  }
+
+  const baseRedirect = parseRedirect(appRedirect);
+  if (!baseRedirect) {
+    return res.status(500).json({ error: "Invalid app redirect config" });
+  }
+
+  const allowlist = [baseRedirect];
+  if (redirectAllowlist) {
+    for (const entry of redirectAllowlist.split(",")) {
+      const parsed = parseRedirect(entry.trim());
+      if (parsed) allowlist.push(parsed);
+    }
+  }
+
+  const requestedRedirect = String(req.query.redirect || "").trim();
+  let finalRedirect = appRedirect;
+  if (requestedRedirect) {
+    const parsed = parseRedirect(requestedRedirect);
+    if (!parsed || !isAllowedRedirect(parsed, allowlist)) {
+      return res.status(400).json({ error: "Invalid redirect" });
+    }
+    finalRedirect = parsed.toString();
   }
 
   const state = signState({
@@ -175,7 +217,11 @@ router.get("/callback", async (req, res) => {
     );
 
     const redirectUrl = new URL(statePayload.redirect);
-    redirectUrl.searchParams.set("token", appToken);
+    const hashParams = new URLSearchParams(
+      redirectUrl.hash ? redirectUrl.hash.replace(/^#/, "") : ""
+    );
+    hashParams.set("token", appToken);
+    redirectUrl.hash = hashParams.toString();
     res.redirect(redirectUrl.toString());
   } catch (err) {
     res.status(500).json({ error: "Microsoft auth failed" });
