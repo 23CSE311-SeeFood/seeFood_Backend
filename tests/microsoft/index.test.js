@@ -239,7 +239,8 @@ describe('Microsoft Routes', () => {
 
       expect(url.origin + url.pathname).toBe(redirectUrl);
 
-      const token = url.searchParams.get('token');
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
+      const token = hashParams.get('token');
       expect(token).toBeTruthy();
 
       const payload = jwt.verify(token, 'jwt-secret');
