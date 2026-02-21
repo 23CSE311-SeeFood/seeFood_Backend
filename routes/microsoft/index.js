@@ -1,6 +1,8 @@
+const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const express = require("express");
 const jwt = require("jsonwebtoken");
+const prisma = require("../../lib/prisma");
 
 const router = express.Router();
 
@@ -86,26 +88,21 @@ router.get("/callback", async (req, res) => {
     return res.status(500).json({ error: "Microsoft OAuth not configured" });
   }
 
-  console.log("got callback");
   const { code, state, error, error_description } = req.query;
   if (error) {
-    console.log("error :",error)
     return res
       .status(400)
       .json({ error: "Microsoft auth error", details: error_description || error });
   }
   if (!code || !state) {
-    console.log("no state");
     return res.status(400).json({ error: "Missing code or state" });
   }
 
   const statePayload = verifyState(state);
   if (!statePayload || !statePayload.ts || !statePayload.redirect) {
-    console.log("error payload");
     return res.status(400).json({ error: "Invalid state" });
   }
   if (Date.now() - statePayload.ts > STATE_TTL_MS) {
-      console.log("error expired");
     return res.status(400).json({ error: "State expired" });
   }
 
@@ -125,13 +122,11 @@ router.get("/callback", async (req, res) => {
     const tokenData = await tokenResp.json();
 
     if (!tokenResp.ok) {
-      console.log("errors");
       return res.status(400).json({ error: "Token exchange failed", details: tokenData });
     }
 
     const accessToken = tokenData.access_token;
     if (!accessToken) {
-      console.log("error payloads");
       return res.status(400).json({ error: "Missing access token" });
     }
 
@@ -140,8 +135,28 @@ router.get("/callback", async (req, res) => {
     });
     const me = await meResp.json();
     if (!meResp.ok) {
-      console.log("okays")
       return res.status(400).json({ error: "Failed to fetch profile", details: me });
+    }
+
+    const email = (me.mail || me.userPrincipalName || "").toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: "Microsoft account missing email" });
+    }
+
+    let student = await prisma.student.findUnique({ where: { email } });
+    if (!student) {
+      const randomPassword = crypto.randomBytes(16).toString("hex");
+      const hash = await bcrypt.hash(randomPassword, 10);
+      student = await prisma.student.create({
+        data: {
+          name: me.displayName || me.givenName || email,
+          email,
+          number: null,
+          branch: null,
+          rollNumber: null,
+          password: hash,
+        },
+      });
     }
 
     const jwtSecret = process.env.JWT_SECRET || "";
@@ -149,13 +164,11 @@ router.get("/callback", async (req, res) => {
       return res.status(500).json({ error: "JWT secret not configured" });
     }
 
-    console.log(me);
     const appToken = jwt.sign(
       {
-        sub: `ms:${me.id}`,
-        email: me.mail || me.userPrincipalName || null,
-        name: me.displayName || null,
-        provider: "microsoft",
+        sub: student.id,
+        email: student.email,
+        name: student.name,
       },
       jwtSecret,
       { expiresIn: "7d" }

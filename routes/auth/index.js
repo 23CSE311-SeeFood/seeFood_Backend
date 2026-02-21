@@ -78,6 +78,9 @@ router.post("/login", async (req, res) => {
     if (!student) {
       return res.status(401).json({ error: "invalid credentials" });
     }
+    if (!student.password) {
+      return res.status(401).json({ error: "Use Microsoft login for this account" });
+    }
 
     const ok = await bcrypt.compare(password, student.password);
     if (!ok) {
