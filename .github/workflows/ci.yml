@@ -60,14 +60,6 @@ jobs:
       - name: Run Unit Tests
         run: npm run test --if-present
 
-      - name: Start Server
-        run: npm run start &
-        env:
-          NODE_ENV: test
-
-      - name: Wait for Server
-        run: sleep 5 && npx wait-on http://localhost:3000 --timeout 60000
-
       - name: Install Playwright Browsers
         run: npx playwright install
 
