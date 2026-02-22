@@ -185,21 +185,20 @@ router.get("/callback", async (req, res) => {
       return res.status(400).json({ error: "Microsoft account missing email" });
     }
 
-    let student = await prisma.student.findUnique({ where: { email } });
-    if (!student) {
-      const randomPassword = crypto.randomBytes(16).toString("hex");
-      const hash = await bcrypt.hash(randomPassword, 10);
-      student = await prisma.student.create({
-        data: {
-          name: me.displayName || me.givenName || email,
-          email,
-          number: null,
-          branch: null,
-          rollNumber: null,
-          password: hash,
-        },
-      });
-    }
+    const randomPassword = crypto.randomBytes(16).toString("hex");
+    const hash = await bcrypt.hash(randomPassword, 10);
+    const student = await prisma.student.upsert({
+      where: { email },
+      update: {},
+      create: {
+        name: me.displayName || me.givenName || email,
+        email,
+        number: null,
+        branch: null,
+        rollNumber: null,
+        password: hash,
+      },
+    });
 
     const jwtSecret = process.env.JWT_SECRET || "";
     if (!jwtSecret) {
