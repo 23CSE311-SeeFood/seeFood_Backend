@@ -13,10 +13,14 @@ function requireJwtSecret(res) {
   return true;
 }
 
-function signToken(user, role) {
+function signToken(user, nameOverride) {
   const secret = process.env.JWT_SECRET || "";
   return jwt.sign(
-    { sub: user.id, email: user.email, role },
+    {
+      sub: user.id,
+      email: user.email,
+      name: nameOverride || user.name || null,
+    },
     secret,
     { expiresIn: "7d" }
   );
@@ -54,7 +58,7 @@ router.post("/register", async (req, res) => {
       },
     });
 
-    const token = signToken(student, "student");
+    const token = signToken(student);
     res.status(201).json({ token, student: sanitizeStudent(student) });
   } catch (error) {
     res.status(500).json({ error: "Failed to register" });
@@ -74,13 +78,16 @@ router.post("/login", async (req, res) => {
     if (!student) {
       return res.status(401).json({ error: "invalid credentials" });
     }
+    if (!student.password) {
+      return res.status(401).json({ error: "Use Microsoft login for this account" });
+    }
 
     const ok = await bcrypt.compare(password, student.password);
     if (!ok) {
       return res.status(401).json({ error: "invalid credentials" });
     }
 
-    const token = signToken(student, "student");
+    const token = signToken(student);
     res.json({ token, student: sanitizeStudent(student) });
   } catch (error) {
     res.status(500).json({ error: "Failed to login" });
@@ -110,7 +117,7 @@ router.post("/admin/register", async (req, res) => {
       },
     });
 
-    const token = signToken(admin, "admin");
+    const token = signToken(admin);
     const { password: _, ...safeAdmin } = admin;
     res.status(201).json({ token, admin: safeAdmin });
   } catch (error) {
@@ -137,7 +144,7 @@ router.post("/admin/login", async (req, res) => {
       return res.status(401).json({ error: "invalid credentials" });
     }
 
-    const token = signToken(admin, "admin");
+    const token = signToken(admin);
     const { password: _, ...safeAdmin } = admin;
     res.json({ token, admin: safeAdmin });
   } catch (error) {
@@ -177,7 +184,7 @@ router.post("/cashier/register", async (req, res) => {
       },
     });
 
-    const token = signToken(cashier, "cashier");
+    const token = signToken(cashier);
     const { password: _, ...safeCashier } = cashier;
     res.status(201).json({ token, cashier: safeCashier });
   } catch (error) {
@@ -204,7 +211,7 @@ router.post("/cashier/login", async (req, res) => {
       return res.status(401).json({ error: "invalid credentials" });
     }
 
-    const token = signToken(cashier, "cashier");
+    const token = signToken(cashier);
     const { password: _, ...safeCashier } = cashier;
     res.json({ token, cashier: safeCashier });
   } catch (error) {

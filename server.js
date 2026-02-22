@@ -8,6 +8,7 @@ const paymentsRouter = require("./routes/payments");
 const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
 const ordersRouter = require("./routes/orders");
+const microsoftRouter = require("./routes/microsoft");
 
 const app = express();
 const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001")
@@ -44,6 +45,7 @@ app.use("/canteens", canteensRouter);
 app.use("/canteens/:canteenId/items", itemsRouter);
 app.use("/payments", paymentsRouter);
 app.use("/auth", authRouter);
+app.use("/auth/microsoft", microsoftRouter);
 app.use("/cart", cartRouter);
 app.use("/orders", ordersRouter);
 
