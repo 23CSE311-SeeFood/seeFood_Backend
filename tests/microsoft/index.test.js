@@ -9,8 +9,7 @@ jest.mock('bcryptjs', () => ({
 
 jest.mock('../../lib/prisma', () => ({
   student: {
-    findUnique: jest.fn(),
-    create: jest.fn(),
+    upsert: jest.fn(),
   },
 }));
 
@@ -171,6 +170,8 @@ describe('Microsoft Routes', () => {
 
       const state = createState({ ts: Date.now(), redirect: redirectUrl }, secret);
 
+      const email = 'user@cb.students.amrita.edu';
+
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
@@ -178,12 +179,12 @@ describe('Microsoft Routes', () => {
         })
         .mockResolvedValueOnce({
           ok: true,
-          json: async () => ({ mail: 'user@example.com', displayName: 'User' }),
+          json: async () => ({ mail: email, displayName: 'User' }),
         });
 
-      prisma.student.findUnique.mockResolvedValue({
+      prisma.student.upsert.mockResolvedValue({
         id: 1,
-        email: 'user@example.com',
+        email,
         name: 'User',
       });
 
@@ -198,7 +199,7 @@ describe('Microsoft Routes', () => {
     it('should create a new student and redirect with JWT token', async () => {
       const secret = 'state-secret';
       const redirectUrl = 'https://app.example.com/callback';
-      const email = 'user@example.com';
+      const email = 'user@cb.students.amrita.edu';
 
       process.env.MS_CLIENT_ID = 'client-id';
       process.env.MS_CLIENT_SECRET = 'client-secret';
@@ -218,8 +219,7 @@ describe('Microsoft Routes', () => {
           json: async () => ({ mail: email, displayName: 'User Name' }),
         });
 
-      prisma.student.findUnique.mockResolvedValue(null);
-      prisma.student.create.mockResolvedValue({
+      prisma.student.upsert.mockResolvedValue({
         id: 1,
         email,
         name: 'User Name',
@@ -248,8 +248,10 @@ describe('Microsoft Routes', () => {
       expect(payload.email).toBe(email);
       expect(payload.name).toBe('User Name');
 
-      expect(prisma.student.create).toHaveBeenCalledWith({
-        data: {
+      expect(prisma.student.upsert).toHaveBeenCalledWith({
+        where: { email },
+        update: {},
+        create: {
           name: 'User Name',
           email,
           number: null,
