@@ -46,7 +46,7 @@ jobs:
 
       - name: Setup Environment Variables
         run: |
-          echo "DATABASE_URL=postgresql://postgres:teja@3905@localhost:5432/seefood" > .env
+          echo "DATABASE_URL=postgresql://postgres:teja%403905@localhost:5432/seefood" > .env
           echo "JWT_SECRET=vivek" >> .env
           echo "PORT=3000" >> .env
           echo "CORS_ORIGINS=http://localhost:3000,http://localhost:3001" >> .env
@@ -66,7 +66,7 @@ jobs:
           NODE_ENV: test
 
       - name: Wait for Server
-        run: npx wait-on http://localhost:3000 --timeout 30000
+        run: sleep 5 && npx wait-on http://localhost:3000 --timeout 60000
 
       - name: Install Playwright Browsers
         run: npx playwright install
