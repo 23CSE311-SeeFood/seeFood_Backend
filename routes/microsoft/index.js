@@ -184,6 +184,9 @@ router.get("/callback", async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: "Microsoft account missing email" });
     }
+    if (!email.endsWith("@cb.students.amrita.edu")) {
+      return res.status(403).json({ error: "Unauthorized email domain" });
+    }
 
     const randomPassword = crypto.randomBytes(16).toString("hex");
     const hash = await bcrypt.hash(randomPassword, 10);
