@@ -83,24 +83,56 @@ async function calculateItemsTotal(canteenId, items) {
   return { total, normalized, priceMap };
 }
 
-async function assignTokenAndQueue(order) {
+const CATEGORY_TO_STATION = {
+  RICE: "RICE",
+  CURRIES: "CURRIES",
+  ICECREAM: "ICECREAM",
+  ROOTI: "ROOTI",
+  DRINKS: "DRINKS",
+  OTHER: "GENERAL",
+};
+
+async function assignTokenAndQueue(orderId) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: { include: { canteenItem: true } } },
+  });
+  if (!order) {
+    throw new Error("ORDER_NOT_FOUND");
+  }
+  if (order.tokenNumber) {
+    return order.tokenNumber;
+  }
+
   const redis = await getRedis();
   const dateKey = getDateKey();
   const tokenKey = `token:${order.canteenId}:${dateKey}`;
-  const queueKey = `queue:${order.canteenId}:${dateKey}`;
 
   const tokenNumber = await redis.incr(tokenKey);
   if (tokenNumber === 1) {
     await redis.expire(tokenKey, secondsUntilEndOfDay());
   }
 
-  const payload = JSON.stringify({
-    orderId: order.id,
-    tokenNumber,
-    createdAt: new Date().toISOString(),
-  });
-  await redis.rPush(queueKey, payload);
-  await redis.expire(queueKey, secondsUntilEndOfDay());
+  for (const item of order.items) {
+    const category = item.canteenItem?.category || "OTHER";
+    const station = CATEGORY_TO_STATION[category] || "GENERAL";
+    const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
+
+    const payload = JSON.stringify({
+      orderId: order.id,
+      orderItemId: item.id,
+      tokenNumber,
+      canteenItemId: item.canteenItemId,
+      itemName: item.canteenItem?.name || null,
+      quantity: item.quantity,
+      category,
+      station,
+      createdAt: new Date().toISOString(),
+    });
+
+    await redis.rPush(queueKey, payload);
+    await redis.expire(queueKey, secondsUntilEndOfDay());
+  }
 
   await prisma.order.update({
     where: { id: order.id },
@@ -122,6 +154,9 @@ router.post("/create", async (req, res) => {
     return res
       .status(400)
       .json({ error: "studentId or cashierId must be provided" });
+  }
+  if (studentId !== null && cashierId !== null) {
+    return res.status(400).json({ error: "Provide only studentId or cashierId" });
   }
 
   try {
@@ -186,18 +221,23 @@ router.post("/create", async (req, res) => {
       }));
     }
 
-    const amountPaise = Math.round(total * 100);
-    const razorpayOrder = await razorpay.orders.create({
-      amount: amountPaise,
-      currency: "INR",
-      receipt: `order_${Date.now()}`,
-    });
+    let razorpayOrder = null;
+    if (studentId !== null) {
+      const amountPaise = Math.round(total * 100);
+      razorpayOrder = await razorpay.orders.create({
+        amount: amountPaise,
+        currency: "INR",
+        receipt: `order_${Date.now()}`,
+      });
+    }
 
     const order = await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
-          orderId: razorpayOrder.id,
-          status: "CREATED",
+          orderId: razorpayOrder
+            ? razorpayOrder.id
+            : `cashier_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+          status: cashierId !== null ? "PAID" : "CREATED",
           total,
           currency: "INR",
           studentId,
@@ -220,15 +260,20 @@ router.post("/create", async (req, res) => {
       return created;
     });
 
-    const tokenNumber = await assignTokenAndQueue(order);
+    let tokenNumber = null;
+    if (cashierId !== null) {
+      tokenNumber = await assignTokenAndQueue(order.id);
+    }
 
     res.status(201).json({
       order: { ...order, tokenNumber },
-      razorpay: {
-        orderId: razorpayOrder.id,
-        amount: razorpayOrder.amount,
-        currency: razorpayOrder.currency,
-      },
+      razorpay: razorpayOrder
+        ? {
+            orderId: razorpayOrder.id,
+            amount: razorpayOrder.amount,
+            currency: razorpayOrder.currency,
+          }
+        : null,
     });
   } catch (error) {
     console.error("Order create failed:", error);
@@ -266,7 +311,8 @@ router.post("/verify", async (req, res) => {
       },
       include: { items: true },
     });
-    res.json({ status: "verified", order: updated });
+    const tokenNumber = await assignTokenAndQueue(updated.id);
+    res.json({ status: "verified", order: { ...updated, tokenNumber } });
   } catch (error) {
     console.error("Order verify failed:", error);
     res.status(404).json({ error: "Order not found" });
@@ -339,6 +385,68 @@ router.get("/canteen/:canteenId", async (req, res) => {
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+router.put("/items/:orderItemId/ready", async (req, res) => {
+  const orderItemId = parseId(req.params.orderItemId);
+  if (orderItemId === null) {
+    return res.status(400).json({ error: "orderItemId must be an integer" });
+  }
+
+  try {
+    const item = await prisma.orderItem.update({
+      where: { id: orderItemId },
+      data: { status: "READY" },
+    });
+
+    const items = await prisma.orderItem.findMany({
+      where: { orderId: item.orderId },
+      select: { status: true },
+    });
+
+    const allReady = items.every((i) => i.status === "READY" || i.status === "DELIVERED");
+    if (allReady) {
+      await prisma.order.update({
+        where: { id: item.orderId },
+        data: { status: "READY" },
+      });
+    }
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to mark item ready" });
+  }
+});
+
+router.put("/items/:orderItemId/delivered", async (req, res) => {
+  const orderItemId = parseId(req.params.orderItemId);
+  if (orderItemId === null) {
+    return res.status(400).json({ error: "orderItemId must be an integer" });
+  }
+
+  try {
+    const item = await prisma.orderItem.update({
+      where: { id: orderItemId },
+      data: { status: "DELIVERED" },
+    });
+
+    const items = await prisma.orderItem.findMany({
+      where: { orderId: item.orderId },
+      select: { status: true },
+    });
+
+    const allDelivered = items.every((i) => i.status === "DELIVERED");
+    if (allDelivered) {
+      await prisma.order.update({
+        where: { id: item.orderId },
+        data: { status: "DELIVERED" },
+      });
+    }
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to mark item delivered" });
   }
 });
 

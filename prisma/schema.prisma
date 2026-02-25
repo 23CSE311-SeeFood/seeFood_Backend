@@ -114,6 +114,8 @@ model CartItem {
 enum OrderStatus {
   CREATED
   PAID
+  READY
+  DELIVERED
   FAILED
   CANCELLED
   REFUNDED
@@ -149,9 +151,16 @@ model OrderItem {
   quantity      Int
   price         Float
   total         Float
+  status        OrderItemStatus @default(PENDING)
   order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
   @@index([canteenItemId])
+}
+
+enum OrderItemStatus {
+  PENDING
+  READY
+  DELIVERED
 }
