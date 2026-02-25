@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const prisma = require("./lib/prisma");
+const { disconnectRedis } = require("./lib/redis");
 const canteensRouter = require("./routes/canteens");
 const itemsRouter = require("./routes/items");
 const paymentsRouter = require("./routes/payments");
@@ -59,5 +60,6 @@ app.listen(port, "0.0.0.0", () => {
 
 process.on("SIGINT", async () => {
   await prisma.$disconnect();
+  await disconnectRedis();
   process.exit(0);
 });

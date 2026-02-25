@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const express = require("express");
 const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
+const { getRedis } = require("../../lib/redis");
 
 const router = express.Router();
 
@@ -27,6 +28,19 @@ function parseId(value) {
   return Number.isInteger(num) ? num : null;
 }
 
+function getDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function secondsUntilEndOfDay(date = new Date()) {
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+  return Math.max(1, Math.floor((end - date) / 1000));
+}
+
 async function calculateCartTotal(cartId) {
   const items = await prisma.cartItem.findMany({
     where: { cartId },
@@ -39,6 +53,63 @@ async function calculateCartTotal(cartId) {
   return { total, items };
 }
 
+async function calculateItemsTotal(canteenId, items) {
+  const normalized = items.map((item) => ({
+    canteenItemId: parseId(item.canteenItemId),
+    quantity: Number(item.quantity),
+  }));
+
+  if (normalized.some((item) => item.canteenItemId === null)) {
+    throw new Error("INVALID_ITEM_ID");
+  }
+  if (normalized.some((item) => !Number.isInteger(item.quantity) || item.quantity <= 0)) {
+    throw new Error("INVALID_QUANTITY");
+  }
+
+  const itemIds = normalized.map((item) => item.canteenItemId);
+  const dbItems = await prisma.canteenItem.findMany({
+    where: { id: { in: itemIds }, canteenId },
+  });
+  if (dbItems.length !== itemIds.length) {
+    throw new Error("INVALID_ITEMS");
+  }
+
+  const priceMap = new Map(dbItems.map((item) => [item.id, item.price]));
+  const total = normalized.reduce(
+    (sum, item) => sum + item.quantity * (priceMap.get(item.canteenItemId) || 0),
+    0
+  );
+
+  return { total, normalized, priceMap };
+}
+
+async function assignTokenAndQueue(order) {
+  const redis = await getRedis();
+  const dateKey = getDateKey();
+  const tokenKey = `token:${order.canteenId}:${dateKey}`;
+  const queueKey = `queue:${order.canteenId}:${dateKey}`;
+
+  const tokenNumber = await redis.incr(tokenKey);
+  if (tokenNumber === 1) {
+    await redis.expire(tokenKey, secondsUntilEndOfDay());
+  }
+
+  const payload = JSON.stringify({
+    orderId: order.id,
+    tokenNumber,
+    createdAt: new Date().toISOString(),
+  });
+  await redis.rPush(queueKey, payload);
+  await redis.expire(queueKey, secondsUntilEndOfDay());
+
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { tokenNumber },
+  });
+
+  return tokenNumber;
+}
+
 router.post("/create", async (req, res) => {
   const razorpay = getRazorpay();
   if (!razorpay) {
@@ -46,26 +117,80 @@ router.post("/create", async (req, res) => {
   }
 
   const studentId = parseId(req.body.studentId);
-  if (studentId === null) {
-    return res.status(400).json({ error: "studentId must be an integer" });
+  const cashierId = parseId(req.body.cashierId);
+  if (studentId === null && cashierId === null) {
+    return res
+      .status(400)
+      .json({ error: "studentId or cashierId must be provided" });
   }
 
   try {
-    const cart = await prisma.cart.findUnique({ where: { studentId } });
-    if (!cart) {
-      return res.status(404).json({ error: "Cart not found" });
-    }
+    let total = 0;
+    let canteenId = null;
+    let orderItemsData = [];
 
-    const { total, items } = await calculateCartTotal(cart.id);
-    if (items.length === 0) {
-      return res.status(400).json({ error: "Cart is empty" });
+    if (studentId !== null) {
+      const cart = await prisma.cart.findUnique({ where: { studentId } });
+      if (!cart) {
+        return res.status(404).json({ error: "Cart not found" });
+      }
+
+      const result = await calculateCartTotal(cart.id);
+      if (result.items.length === 0) {
+        return res.status(400).json({ error: "Cart is empty" });
+      }
+
+      total = result.total;
+      canteenId = cart.canteenId;
+      orderItemsData = result.items.map((item) => ({
+        canteenItemId: item.canteenItemId,
+        quantity: item.quantity,
+        price: item.canteenItem.price,
+        total: item.quantity * item.canteenItem.price,
+      }));
+    } else {
+      const items = Array.isArray(req.body.items) ? req.body.items : [];
+      if (items.length === 0) {
+        return res.status(400).json({ error: "items are required" });
+      }
+
+      const cashier = await prisma.cashier.findUnique({ where: { id: cashierId } });
+      if (!cashier) {
+        return res.status(404).json({ error: "Cashier not found" });
+      }
+
+      canteenId = cashier.canteenId;
+
+      let calc;
+      try {
+        calc = await calculateItemsTotal(canteenId, items);
+      } catch (err) {
+        if (err.message === "INVALID_ITEM_ID") {
+          return res.status(400).json({ error: "invalid canteenItemId" });
+        }
+        if (err.message === "INVALID_QUANTITY") {
+          return res.status(400).json({ error: "invalid quantity" });
+        }
+        if (err.message === "INVALID_ITEMS") {
+          return res.status(400).json({ error: "items must belong to canteen" });
+        }
+        throw err;
+      }
+
+      total = calc.total;
+      orderItemsData = calc.normalized.map((item) => ({
+        canteenItemId: item.canteenItemId,
+        quantity: item.quantity,
+        price: calc.priceMap.get(item.canteenItemId),
+        total: item.quantity * (calc.priceMap.get(item.canteenItemId) || 0),
+      }));
     }
 
     const amountPaise = Math.round(total * 100);
     const razorpayOrder = await razorpay.orders.create({
       amount: amountPaise,
       currency: "INR",
-      receipt: `cart_${cart.id}_${Date.now()}`,
+      receipt: `order_${Date.now()}`,
     });
 
     const order = await prisma.$transaction(async (tx) => {
@@ -76,25 +201,29 @@ router.post("/create", async (req, res) => {
           total,
           currency: "INR",
           studentId,
-          canteenId: cart.canteenId,
+          cashierId,
+          canteenId,
           items: {
-            create: items.map((item) => ({
-              canteenItemId: item.canteenItemId,
-              quantity: item.quantity,
-              price: item.canteenItem.price,
-              total: item.quantity * item.canteenItem.price,
-            })),
+            create: orderItemsData,
           },
         },
         include: { items: true },
       });
 
-      await tx.cart.update({ where: { id: cart.id }, data: { total } });
+      if (studentId !== null) {
+        const cart = await tx.cart.findUnique({ where: { studentId } });
+        if (cart) {
+          await tx.cart.update({ where: { id: cart.id }, data: { total } });
+        }
+      }
+
       return created;
     });
 
+    const tokenNumber = await assignTokenAndQueue(order);
+
     res.status(201).json({
-      order,
+      order: { ...order, tokenNumber },
       razorpay: {
         orderId: razorpayOrder.id,
         amount: razorpayOrder.amount,
@@ -157,6 +286,7 @@ router.get("/:id", async (req, res) => {
         items: { include: { canteenItem: true } },
         canteen: true,
         student: true,
+        cashier: true,
       },
     });
     if (!order) {
@@ -202,6 +332,7 @@ router.get("/canteen/:canteenId", async (req, res) => {
       include: {
         canteen: true,
         student: true,
+        cashier: true,
         items: { include: { canteenItem: true } },
       },
     });

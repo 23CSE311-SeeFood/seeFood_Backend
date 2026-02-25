@@ -78,6 +78,7 @@ model Cashier {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   canteen   Canteen  @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  orders    Order[]
 
   @@index([canteenId])
 }
@@ -125,15 +126,19 @@ model Order {
   status        OrderStatus @default(CREATED)
   total         Float
   currency      String      @default("INR")
-  studentId     Int
+  tokenNumber   Int?
+  studentId     Int?
+  cashierId     Int?
   canteenId     Int
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-  student       Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student       Student?    @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  cashier       Cashier?    @relation(fields: [cashierId], references: [id], onDelete: SetNull)
   canteen       Canteen     @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   items         OrderItem[]
 
   @@index([studentId])
+  @@index([cashierId])
   @@index([canteenId])
 }
 
