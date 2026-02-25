@@ -3,6 +3,7 @@ const express = require("express");
 const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { getRedis } = require("../../lib/redis");
+const { broadcastToCanteen } = require("../../lib/ws");
 
 const router = express.Router();
 
@@ -39,6 +40,53 @@ function secondsUntilEndOfDay(date = new Date()) {
   const end = new Date(date);
   end.setHours(23, 59, 59, 999);
   return Math.max(1, Math.floor((end - date) / 1000));
+}
+
+function buildQueuePayload(order, item, tokenNumber) {
+  const category = item.canteenItem?.category || "OTHER";
+  const station = CATEGORY_TO_STATION[category] || "GENERAL";
+  return JSON.stringify({
+    orderId: order.id,
+    orderItemId: item.id,
+    tokenNumber,
+    canteenItemId: item.canteenItemId,
+    itemName: item.canteenItem?.name || null,
+    quantity: item.quantity,
+    category,
+    station,
+  });
+}
+
+async function getOrderQueueInfo(orderId) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { items: { include: { canteenItem: true } } },
+  });
+  if (!order || !order.tokenNumber) return null;
+
+  const redis = await getRedis();
+  const dateKey = getDateKey(new Date(order.createdAt));
+  const queues = [];
+
+  for (const item of order.items) {
+    const category = item.canteenItem?.category || "OTHER";
+    const station = CATEGORY_TO_STATION[category] || "GENERAL";
+    const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
+    const payload = buildQueuePayload(order, item, order.tokenNumber);
+    const position = await redis.lPos(queueKey, payload);
+    queues.push({
+      station,
+      orderItemId: item.id,
+      position: position === null ? null : position + 1,
+    });
+  }
+
+  return {
+    orderId: order.id,
+    tokenNumber: order.tokenNumber,
+    queues,
+    orderStatus: order.status,
+  };
 }
 
 async function calculateCartTotal(cartId) {
@@ -118,18 +166,7 @@ async function assignTokenAndQueue(orderId) {
     const station = CATEGORY_TO_STATION[category] || "GENERAL";
     const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
 
-    const payload = JSON.stringify({
-      orderId: order.id,
-      orderItemId: item.id,
-      tokenNumber,
-      canteenItemId: item.canteenItemId,
-      itemName: item.canteenItem?.name || null,
-      quantity: item.quantity,
-      category,
-      station,
-      createdAt: new Date().toISOString(),
-    });
-
+    const payload = buildQueuePayload(order, item, tokenNumber);
     await redis.rPush(queueKey, payload);
     await redis.expire(queueKey, secondsUntilEndOfDay());
   }
@@ -138,6 +175,14 @@ async function assignTokenAndQueue(orderId) {
     where: { id: order.id },
     data: { tokenNumber },
   });
+
+  const queueInfo = await getOrderQueueInfo(order.id);
+  if (queueInfo) {
+    broadcastToCanteen(order.canteenId, {
+      type: "queue_update",
+      ...queueInfo,
+    });
+  }
 
   return tokenNumber;
 }
@@ -395,50 +440,11 @@ router.get("/:id/queue", async (req, res) => {
   }
 
   try {
-    const order = await prisma.order.findUnique({
-      where: { id },
-      include: { items: { include: { canteenItem: true } } },
-    });
-    if (!order) {
+    const info = await getOrderQueueInfo(id);
+    if (!info) {
       return res.status(404).json({ error: "Order not found" });
     }
-    if (!order.tokenNumber) {
-      return res.status(400).json({ error: "Order has no token yet" });
-    }
-
-    const redis = await getRedis();
-    const dateKey = getDateKey(new Date(order.createdAt));
-    const queues = [];
-
-    for (const item of order.items) {
-      const category = item.canteenItem?.category || "OTHER";
-      const station = CATEGORY_TO_STATION[category] || "GENERAL";
-      const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
-
-      const payload = JSON.stringify({
-        orderId: order.id,
-        orderItemId: item.id,
-        tokenNumber: order.tokenNumber,
-        canteenItemId: item.canteenItemId,
-        itemName: item.canteenItem?.name || null,
-        quantity: item.quantity,
-        category,
-        station,
-      });
-
-      const position = await redis.lPos(queueKey, payload);
-      queues.push({
-        station,
-        orderItemId: item.id,
-        position: position === null ? null : position + 1,
-      });
-    }
-
-    res.json({
-      orderId: order.id,
-      tokenNumber: order.tokenNumber,
-      queues,
-    });
+    res.json(info);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch queue position" });
   }
@@ -456,6 +462,13 @@ router.put("/items/:orderItemId/ready", async (req, res) => {
       data: { status: "READY" },
     });
 
+    const order = await prisma.order.findUnique({
+      where: { id: item.orderId },
+    });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
     const items = await prisma.orderItem.findMany({
       where: { orderId: item.orderId },
       select: { status: true },
@@ -466,6 +479,28 @@ router.put("/items/:orderItemId/ready", async (req, res) => {
       await prisma.order.update({
         where: { id: item.orderId },
         data: { status: "READY" },
+      });
+    }
+
+    if (order.tokenNumber) {
+      const full = await prisma.orderItem.findUnique({
+        where: { id: item.id },
+        include: { canteenItem: true },
+      });
+      const dateKey = getDateKey(new Date(order.createdAt));
+      const category = full?.canteenItem?.category || "OTHER";
+      const station = CATEGORY_TO_STATION[category] || "GENERAL";
+      const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
+      const payload = buildQueuePayload(order, full, order.tokenNumber);
+      const redis = await getRedis();
+      await redis.lRem(queueKey, 1, payload);
+    }
+
+    const queueInfo = await getOrderQueueInfo(item.orderId);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
       });
     }
 
@@ -487,6 +522,13 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
       data: { status: "DELIVERED" },
     });
 
+    const order = await prisma.order.findUnique({
+      where: { id: item.orderId },
+    });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
     const items = await prisma.orderItem.findMany({
       where: { orderId: item.orderId },
       select: { status: true },
@@ -497,6 +539,28 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
       await prisma.order.update({
         where: { id: item.orderId },
         data: { status: "DELIVERED" },
+      });
+    }
+
+    if (order.tokenNumber) {
+      const full = await prisma.orderItem.findUnique({
+        where: { id: item.id },
+        include: { canteenItem: true },
+      });
+      const dateKey = getDateKey(new Date(order.createdAt));
+      const category = full?.canteenItem?.category || "OTHER";
+      const station = CATEGORY_TO_STATION[category] || "GENERAL";
+      const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
+      const payload = buildQueuePayload(order, full, order.tokenNumber);
+      const redis = await getRedis();
+      await redis.lRem(queueKey, 1, payload);
+    }
+
+    const queueInfo = await getOrderQueueInfo(item.orderId);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
       });
     }
 

@@ -21,7 +21,8 @@
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2",
     "razorpay": "^2.9.6",
-    "redis": "^4.7.1"
+    "redis": "^4.7.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "depcheck": "^1.4.7",
