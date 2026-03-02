@@ -35,9 +35,9 @@ app.use('/orders', ordersRouter);
 const redisClient = {
   incr: jest.fn(),
   expire: jest.fn(),
-  rPush: jest.fn(),
-  lPos: jest.fn(),
-  lRem: jest.fn(),
+  zAdd: jest.fn(),
+  zRank: jest.fn(),
+  zRem: jest.fn(),
 };
 
 const originalEnv = { ...process.env };
@@ -95,7 +95,7 @@ describe('Orders Queue System', () => {
       };
       prisma.order.findUnique.mockResolvedValue(order);
 
-      redisClient.lPos
+      redisClient.zRank
         .mockResolvedValueOnce(0) // first item position
         .mockResolvedValueOnce(2); // second item position
 
@@ -113,9 +113,9 @@ describe('Orders Queue System', () => {
       });
 
       // Ensure Redis was queried with expected keys and payloads
-      expect(redisClient.lPos).toHaveBeenCalledTimes(2);
-      const firstCall = redisClient.lPos.mock.calls[0];
-      const secondCall = redisClient.lPos.mock.calls[1];
+      expect(redisClient.zRank).toHaveBeenCalledTimes(2);
+      const firstCall = redisClient.zRank.mock.calls[0];
+      const secondCall = redisClient.zRank.mock.calls[1];
 
       const dateKey = '20250225';
       expect(firstCall[0]).toBe(`queue:1:RICE:${dateKey}`);
@@ -183,7 +183,7 @@ describe('Orders Queue System', () => {
         ...order,
         items: [fullItem],
       });
-      redisClient.lPos.mockResolvedValue(null);
+      redisClient.zRank.mockResolvedValue(null);
 
       const res = await request(app).put('/orders/items/1001/ready');
 
@@ -191,9 +191,8 @@ describe('Orders Queue System', () => {
       expect(res.body).toEqual({ status: 'ok' });
 
       const dateKey = '20250225';
-      expect(redisClient.lRem).toHaveBeenCalledWith(
+      expect(redisClient.zRem).toHaveBeenCalledWith(
         `queue:2:RICE:${dateKey}`,
-        1,
         expect.any(String)
       );
 
@@ -217,7 +216,7 @@ describe('Orders Queue System', () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ status: 'ok' });
-      expect(redisClient.lRem).not.toHaveBeenCalled();
+      expect(redisClient.zRem).not.toHaveBeenCalled();
     });
   });
 
@@ -252,7 +251,7 @@ describe('Orders Queue System', () => {
         ...order,
         items: [fullItem],
       });
-      redisClient.lPos.mockResolvedValue(null);
+      redisClient.zRank.mockResolvedValue(null);
 
       const res = await request(app).put('/orders/items/2001/delivered');
 
@@ -260,9 +259,8 @@ describe('Orders Queue System', () => {
       expect(res.body).toEqual({ status: 'ok' });
 
       const dateKey = '20250225';
-      expect(redisClient.lRem).toHaveBeenCalledWith(
+      expect(redisClient.zRem).toHaveBeenCalledWith(
         `queue:3:DRINKS:${dateKey}`,
-        1,
         expect.any(String)
       );
 
@@ -317,8 +315,8 @@ describe('Orders Queue System', () => {
 
       redisClient.incr.mockResolvedValue(1);
       redisClient.expire.mockResolvedValue(1);
-      redisClient.rPush.mockResolvedValue(1);
-      redisClient.lPos.mockResolvedValue(0);
+      redisClient.zAdd.mockResolvedValue(1);
+      redisClient.zRank.mockResolvedValue(0);
 
       const razorpay_order_id = 'order_123';
       const razorpay_payment_id = 'pay_456';
@@ -342,7 +340,7 @@ describe('Orders Queue System', () => {
 
       const dateKey = '20250225';
       expect(redisClient.incr).toHaveBeenCalledWith(`token:4:${dateKey}`);
-      expect(redisClient.rPush).toHaveBeenCalledTimes(1);
+      expect(redisClient.zAdd).toHaveBeenCalledTimes(1);
       expect(broadcastToCanteen).toHaveBeenCalledWith(
         4,
         expect.objectContaining({ type: 'queue_update', orderId: 20, tokenNumber: 1 })

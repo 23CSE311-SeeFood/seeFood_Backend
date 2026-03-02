@@ -42,6 +42,10 @@ function secondsUntilEndOfDay(date = new Date()) {
   return Math.max(1, Math.floor((end - date) / 1000));
 }
 
+function getQueueScore(tokenNumber, enqueueTsMs = Date.now()) {
+  return tokenNumber + enqueueTsMs / 1e13;
+}
+
 function buildQueuePayload(order, item, tokenNumber) {
   const category = item.canteenItem?.category || "OTHER";
   const station = CATEGORY_TO_STATION[category] || "GENERAL";
@@ -57,6 +61,33 @@ function buildQueuePayload(order, item, tokenNumber) {
   });
 }
 
+function getStation(item) {
+  const category = item.canteenItem?.category || "OTHER";
+  return CATEGORY_TO_STATION[category] || "GENERAL";
+}
+
+function getQueueKey(canteenId, station, dateKey) {
+  return `queue:${canteenId}:${station}:${dateKey}`;
+}
+
+async function enqueueItem(order, item, tokenNumber, dateKey, enqueueTsMs = Date.now()) {
+  const redis = await getRedis();
+  const station = getStation(item);
+  const queueKey = getQueueKey(order.canteenId, station, dateKey);
+  const payload = buildQueuePayload(order, item, tokenNumber);
+  const score = getQueueScore(tokenNumber, enqueueTsMs);
+  await redis.zAdd(queueKey, [{ score, value: payload }]);
+  await redis.expire(queueKey, secondsUntilEndOfDay());
+}
+
+async function removeItemFromQueue(order, item, tokenNumber, dateKey) {
+  const redis = await getRedis();
+  const station = getStation(item);
+  const queueKey = getQueueKey(order.canteenId, station, dateKey);
+  const payload = buildQueuePayload(order, item, tokenNumber);
+  await redis.zRem(queueKey, payload);
+}
+
 async function getOrderQueueInfo(orderId) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -69,11 +100,10 @@ async function getOrderQueueInfo(orderId) {
   const queues = [];
 
   for (const item of order.items) {
-    const category = item.canteenItem?.category || "OTHER";
-    const station = CATEGORY_TO_STATION[category] || "GENERAL";
-    const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
+    const station = getStation(item);
+    const queueKey = getQueueKey(order.canteenId, station, dateKey);
     const payload = buildQueuePayload(order, item, order.tokenNumber);
-    const position = await redis.lPos(queueKey, payload);
+    const position = await redis.zRank(queueKey, payload);
     queues.push({
       station,
       orderItemId: item.id,
@@ -162,13 +192,7 @@ async function assignTokenAndQueue(orderId) {
   }
 
   for (const item of order.items) {
-    const category = item.canteenItem?.category || "OTHER";
-    const station = CATEGORY_TO_STATION[category] || "GENERAL";
-    const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
-
-    const payload = buildQueuePayload(order, item, tokenNumber);
-    await redis.rPush(queueKey, payload);
-    await redis.expire(queueKey, secondsUntilEndOfDay());
+    await enqueueItem(order, item, tokenNumber, dateKey);
   }
 
   await prisma.order.update({
@@ -488,12 +512,7 @@ router.put("/items/:orderItemId/ready", async (req, res) => {
         include: { canteenItem: true },
       });
       const dateKey = getDateKey(new Date(order.createdAt));
-      const category = full?.canteenItem?.category || "OTHER";
-      const station = CATEGORY_TO_STATION[category] || "GENERAL";
-      const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
-      const payload = buildQueuePayload(order, full, order.tokenNumber);
-      const redis = await getRedis();
-      await redis.lRem(queueKey, 1, payload);
+      await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
     const queueInfo = await getOrderQueueInfo(item.orderId);
@@ -548,12 +567,7 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
         include: { canteenItem: true },
       });
       const dateKey = getDateKey(new Date(order.createdAt));
-      const category = full?.canteenItem?.category || "OTHER";
-      const station = CATEGORY_TO_STATION[category] || "GENERAL";
-      const queueKey = `queue:${order.canteenId}:${station}:${dateKey}`;
-      const payload = buildQueuePayload(order, full, order.tokenNumber);
-      const redis = await getRedis();
-      await redis.lRem(queueKey, 1, payload);
+      await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
     const queueInfo = await getOrderQueueInfo(item.orderId);
@@ -567,6 +581,133 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
     res.json({ status: "ok" });
   } catch (error) {
     res.status(500).json({ error: "Failed to mark item delivered" });
+  }
+});
+
+router.put("/items/:orderItemId/start", async (req, res) => {
+  const orderItemId = parseId(req.params.orderItemId);
+  if (orderItemId === null) {
+    return res.status(400).json({ error: "orderItemId must be an integer" });
+  }
+
+  try {
+    const item = await prisma.orderItem.update({
+      where: { id: orderItemId },
+      data: { status: "IN_PROGRESS" },
+    });
+
+    const order = await prisma.order.findUnique({
+      where: { id: item.orderId },
+    });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    if (order.tokenNumber) {
+      const full = await prisma.orderItem.findUnique({
+        where: { id: item.id },
+        include: { canteenItem: true },
+      });
+      const dateKey = getDateKey(new Date(order.createdAt));
+      await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
+    }
+
+    const queueInfo = await getOrderQueueInfo(item.orderId);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
+      });
+    }
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to mark item in progress" });
+  }
+});
+
+router.put("/items/:orderItemId/delayed", async (req, res) => {
+  const orderItemId = parseId(req.params.orderItemId);
+  if (orderItemId === null) {
+    return res.status(400).json({ error: "orderItemId must be an integer" });
+  }
+
+  try {
+    const item = await prisma.orderItem.update({
+      where: { id: orderItemId },
+      data: { status: "DELAYED" },
+    });
+
+    const order = await prisma.order.findUnique({
+      where: { id: item.orderId },
+    });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    if (order.tokenNumber) {
+      const full = await prisma.orderItem.findUnique({
+        where: { id: item.id },
+        include: { canteenItem: true },
+      });
+      const dateKey = getDateKey(new Date(order.createdAt));
+      await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
+    }
+
+    const queueInfo = await getOrderQueueInfo(item.orderId);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
+      });
+    }
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delay item" });
+  }
+});
+
+router.put("/items/:orderItemId/requeue", async (req, res) => {
+  const orderItemId = parseId(req.params.orderItemId);
+  if (orderItemId === null) {
+    return res.status(400).json({ error: "orderItemId must be an integer" });
+  }
+
+  try {
+    const item = await prisma.orderItem.update({
+      where: { id: orderItemId },
+      data: { status: "PENDING" },
+    });
+
+    const order = await prisma.order.findUnique({
+      where: { id: item.orderId },
+    });
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    if (!order.tokenNumber) {
+      return res.status(400).json({ error: "Order has no token yet" });
+    }
+
+    const full = await prisma.orderItem.findUnique({
+      where: { id: item.id },
+      include: { canteenItem: true },
+    });
+    const dateKey = getDateKey(new Date(order.createdAt));
+    await enqueueItem(order, full, order.tokenNumber, dateKey);
+
+    const queueInfo = await getOrderQueueInfo(item.orderId);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
+      });
+    }
+
+    res.json({ status: "ok" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to requeue item" });
   }
 });
 
