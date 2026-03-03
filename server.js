@@ -1,7 +1,10 @@
 require("dotenv").config();
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const prisma = require("./lib/prisma");
+const { disconnectRedis } = require("./lib/redis");
+const { attachWebSocket } = require("./lib/ws");
 const canteensRouter = require("./routes/canteens");
 const itemsRouter = require("./routes/items");
 const paymentsRouter = require("./routes/payments");
@@ -53,11 +56,15 @@ app.use((req, res) => {
   res.status(404).json({ error: "Not Found" });
 });
 
-app.listen(port, "0.0.0.0", () => {
+const server = http.createServer(app);
+attachWebSocket(server);
+
+server.listen(port, "0.0.0.0", () => {
   console.log(`Server listening on port ${port}`);
 });
 
 process.on("SIGINT", async () => {
   await prisma.$disconnect();
+  await disconnectRedis();
   process.exit(0);
 });

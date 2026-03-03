@@ -78,6 +78,7 @@ model Cashier {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   canteen   Canteen  @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  orders    Order[]
 
   @@index([canteenId])
 }
@@ -113,6 +114,8 @@ model CartItem {
 enum OrderStatus {
   CREATED
   PAID
+  READY
+  DELIVERED
   FAILED
   CANCELLED
   REFUNDED
@@ -125,15 +128,19 @@ model Order {
   status        OrderStatus @default(CREATED)
   total         Float
   currency      String      @default("INR")
-  studentId     Int
+  tokenNumber   Int?
+  studentId     Int?
+  cashierId     Int?
   canteenId     Int
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-  student       Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student       Student?    @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  cashier       Cashier?    @relation(fields: [cashierId], references: [id], onDelete: SetNull)
   canteen       Canteen     @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   items         OrderItem[]
 
   @@index([studentId])
+  @@index([cashierId])
   @@index([canteenId])
 }
 
@@ -144,9 +151,18 @@ model OrderItem {
   quantity      Int
   price         Float
   total         Float
+  status        OrderItemStatus @default(PENDING)
   order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
   @@index([canteenItemId])
+}
+
+enum OrderItemStatus {
+  PENDING
+  IN_PROGRESS
+  DELAYED
+  READY
+  DELIVERED
 }
