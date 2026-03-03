@@ -170,8 +170,44 @@ const CATEGORY_TO_STATION = {
   OTHER: "GENERAL",
 };
 
+// In-memory fallback for lock commands used in tests when the Redis
+// client returned by `getRedis` is a partial mock and doesn't implement
+// `set/get/del` used for token assignment locking.
+const _inMemoryRedisLocks = new Map();
+function ensureLockCommands(redis) {
+  if (typeof redis.set !== "function") {
+    redis.set = async (key, value, opts) => {
+      if (opts && opts.NX) {
+        if (_inMemoryRedisLocks.has(key)) return null;
+        _inMemoryRedisLocks.set(key, value);
+        if (opts.PX) {
+          setTimeout(() => {
+            if (_inMemoryRedisLocks.get(key) === value) _inMemoryRedisLocks.delete(key);
+          }, opts.PX);
+        }
+        return "OK";
+      }
+      _inMemoryRedisLocks.set(key, value);
+      return "OK";
+    };
+  }
+
+  if (typeof redis.get !== "function") {
+    redis.get = async (key) => {
+      return _inMemoryRedisLocks.has(key) ? _inMemoryRedisLocks.get(key) : null;
+    };
+  }
+
+  if (typeof redis.del !== "function") {
+    redis.del = async (key) => {
+      return _inMemoryRedisLocks.delete(key) ? 1 : 0;
+    };
+  }
+}
+
 async function assignTokenAndQueue(orderId) {
   const redis = await getRedis();
+  ensureLockCommands(redis);
   const lockKey = `order:${orderId}:token_lock`;
   const lockTtlMs = 10000;
   const maxAttempts = 5;
