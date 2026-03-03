@@ -171,44 +171,87 @@ const CATEGORY_TO_STATION = {
 };
 
 async function assignTokenAndQueue(orderId) {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    include: { items: { include: { canteenItem: true } } },
-  });
-  if (!order) {
-    throw new Error("ORDER_NOT_FOUND");
-  }
-  if (order.tokenNumber) {
-    return order.tokenNumber;
-  }
-
   const redis = await getRedis();
-  const dateKey = getDateKey();
-  const tokenKey = `token:${order.canteenId}:${dateKey}`;
+  const lockKey = `order:${orderId}:token_lock`;
+  const lockTtlMs = 10000;
+  const maxAttempts = 5;
+  let lockValue = null;
+  let lockAcquired = false;
 
-  const tokenNumber = await redis.incr(tokenKey);
-  if (tokenNumber === 1) {
-    await redis.expire(tokenKey, secondsUntilEndOfDay());
-  }
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    lockValue = crypto.randomUUID
+      ? crypto.randomUUID()
+      : crypto.randomBytes(16).toString("hex");
+    const ok = await redis.set(lockKey, lockValue, { NX: true, PX: lockTtlMs });
+    if (ok) {
+      lockAcquired = true;
+      break;
+    }
 
-  for (const item of order.items) {
-    await enqueueItem(order, item, tokenNumber, dateKey);
-  }
-
-  await prisma.order.update({
-    where: { id: order.id },
-    data: { tokenNumber },
-  });
-
-  const queueInfo = await getOrderQueueInfo(order.id);
-  if (queueInfo) {
-    broadcastToCanteen(order.canteenId, {
-      type: "queue_update",
-      ...queueInfo,
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { tokenNumber: true },
     });
+    if (existing?.tokenNumber) {
+      return existing.tokenNumber;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  return tokenNumber;
+  if (!lockAcquired) {
+    throw new Error("TOKEN_ASSIGNMENT_IN_PROGRESS");
+  }
+
+  let order = null;
+  try {
+    order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { canteenItem: true } } },
+    });
+    if (!order) {
+      throw new Error("ORDER_NOT_FOUND");
+    }
+    if (order.tokenNumber) {
+      return order.tokenNumber;
+    }
+
+    const dateKey = getDateKey();
+    const tokenKey = `token:${order.canteenId}:${dateKey}`;
+
+    const tokenNumber = await redis.incr(tokenKey);
+    if (tokenNumber === 1) {
+      await redis.expire(tokenKey, secondsUntilEndOfDay());
+    }
+
+    for (const item of order.items) {
+      await enqueueItem(order, item, tokenNumber, dateKey);
+    }
+
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { tokenNumber },
+    });
+
+    const queueInfo = await getOrderQueueInfo(order.id);
+    if (queueInfo) {
+      broadcastToCanteen(order.canteenId, {
+        type: "queue_update",
+        ...queueInfo,
+      });
+    }
+
+    return tokenNumber;
+  } finally {
+    try {
+      const current = await redis.get(lockKey);
+      if (current === lockValue) {
+        await redis.del(lockKey);
+      }
+    } catch (err) {
+      console.error("Failed to release order lock:", err);
+    }
+  }
 }
 
 router.post("/create", async (req, res) => {
