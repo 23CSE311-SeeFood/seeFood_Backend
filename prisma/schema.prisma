@@ -16,6 +16,7 @@ model Canteen {
   carts   Cart[]
   orders  Order[]
   cashiers Cashier[]
+  prebooks Prebook[]
 }
 
 model CanteenItem {
@@ -30,6 +31,7 @@ model CanteenItem {
   canteen   Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   cartItems CartItem[]
   orderItems OrderItem[]
+  prebookItems PrebookItem[]
 
   @@index([canteenId])
 }
@@ -58,6 +60,7 @@ model Student {
   password   String?
   carts      Cart[]
   orders     Order[]
+  prebooks   Prebook[]
 }
 
 model Admin {
@@ -129,6 +132,8 @@ model Order {
   total         Float
   currency      String      @default("INR")
   tokenNumber   Int?
+  isPrebooked   Boolean     @default(false)
+  scheduledFor  DateTime?
   studentId     Int?
   cashierId     Int?
   canteenId     Int
@@ -142,6 +147,7 @@ model Order {
   @@index([studentId])
   @@index([cashierId])
   @@index([canteenId])
+  @@index([canteenId, scheduledFor])
 }
 
 model OrderItem {
@@ -165,4 +171,46 @@ enum OrderItemStatus {
   DELAYED
   READY
   DELIVERED
+}
+
+enum PrebookStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  EXPIRED
+  CANCELLED
+}
+
+model Prebook {
+  id              Int           @id @default(autoincrement())
+  studentId       Int
+  canteenId       Int
+  slotStart       DateTime
+  slotEnd         DateTime
+  status          PrebookStatus @default(PENDING_PAYMENT)
+  total           Float
+  currency        String        @default("INR")
+  razorpayOrderId String?       @unique
+  expiresAt       DateTime
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  student         Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  canteen         Canteen       @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  items           PrebookItem[]
+
+  @@index([studentId])
+  @@index([canteenId, slotStart])
+}
+
+model PrebookItem {
+  id            Int         @id @default(autoincrement())
+  prebookId     Int
+  canteenItemId Int
+  quantity      Int
+  price         Float
+  total         Float
+  prebook       Prebook     @relation(fields: [prebookId], references: [id], onDelete: Cascade)
+  canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
+
+  @@index([prebookId])
+  @@index([canteenItemId])
 }

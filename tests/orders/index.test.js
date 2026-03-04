@@ -26,7 +26,7 @@ jest.mock('../../lib/ws', () => ({
 const prisma = require('../../lib/prisma');
 const { getRedis } = require('../../lib/redis');
 const { broadcastToCanteen } = require('../../lib/ws');
-const ordersRouter = require('../../routes/orders');
+const { router: ordersRouter } = require('../../routes/orders');
 
 const app = express();
 app.use(express.json());

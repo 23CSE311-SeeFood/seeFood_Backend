@@ -96,7 +96,8 @@ async function getOrderQueueInfo(orderId) {
   if (!order || !order.tokenNumber) return null;
 
   const redis = await getRedis();
-  const dateKey = getDateKey(new Date(order.createdAt));
+  const queueDate = order.scheduledFor || order.createdAt;
+  const dateKey = getDateKey(new Date(queueDate));
   const queues = [];
 
   for (const item of order.items) {
@@ -205,6 +206,47 @@ function ensureLockCommands(redis) {
   }
 }
 
+const PREBOOK_LEAD_MINUTES = Number.parseInt(
+  process.env.PREBOOK_LEAD_MINUTES || "20",
+  10
+);
+
+let prebookIntervalStarted = false;
+
+async function processDuePrebookOrders() {
+  const dueTime = new Date(Date.now() + PREBOOK_LEAD_MINUTES * 60 * 1000);
+  const orders = await prisma.order.findMany({
+    where: {
+      isPrebooked: true,
+      status: "PAID",
+      tokenNumber: null,
+      scheduledFor: { lte: dueTime },
+    },
+    select: { id: true },
+  });
+
+  for (const order of orders) {
+    try {
+      await assignTokenAndQueue(order.id);
+    } catch (error) {
+      console.error("Failed to enqueue prebook order:", error);
+    }
+  }
+}
+
+function startPrebookScheduler() {
+  if (prebookIntervalStarted) return;
+  prebookIntervalStarted = true;
+  const interval = setInterval(() => {
+    processDuePrebookOrders().catch((error) => {
+      console.error("Prebook scheduler error:", error);
+    });
+  }, 60 * 1000);
+  interval.unref();
+}
+
+startPrebookScheduler();
+
 async function assignTokenAndQueue(orderId) {
   const redis = await getRedis();
   ensureLockCommands(redis);
@@ -252,7 +294,8 @@ async function assignTokenAndQueue(orderId) {
       return order.tokenNumber;
     }
 
-    const dateKey = getDateKey();
+    const serviceDate = order.scheduledFor || new Date();
+    const dateKey = getDateKey(new Date(serviceDate));
     const tokenKey = `token:${order.canteenId}:${dateKey}`;
 
     const tokenNumber = await redis.incr(tokenKey);
@@ -790,4 +833,4 @@ router.put("/items/:orderItemId/requeue", async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, assignTokenAndQueue };
