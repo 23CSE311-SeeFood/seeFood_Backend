@@ -33,6 +33,7 @@ model CanteenItem {
   cartItems CartItem[]
   orderItems OrderItem[]
   prebookItems PrebookItem[]
+  roomMemberItems RoomMemberItem[]
 
   @@index([canteenId])
 }
@@ -148,6 +149,7 @@ model Order {
   canteen       Canteen     @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   room          Room?       @relation(fields: [roomId], references: [id], onDelete: SetNull)
   items         OrderItem[]
+  roomMembers   RoomMember[]
 
   @@index([studentId])
   @@index([cashierId])
@@ -258,6 +260,7 @@ model RoomMember {
   id              Int              @id @default(autoincrement())
   roomId          Int
   studentId       Int
+  orderId         Int?
   status          RoomMemberStatus @default(PENDING)
   amount          Float?
   razorpayOrderId String?          @unique
@@ -266,11 +269,13 @@ model RoomMember {
   updatedAt       DateTime         @updatedAt
   room            Room             @relation(fields: [roomId], references: [id], onDelete: Cascade)
   student         Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  order           Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
   items           RoomMemberItem[]
 
   @@unique([roomId, studentId])
   @@index([roomId])
   @@index([studentId])
+  @@index([orderId])
 }
 
 model RoomMemberItem {

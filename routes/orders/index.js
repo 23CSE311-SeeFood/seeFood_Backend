@@ -543,11 +543,18 @@ router.get("/student/:studentId", async (req, res) => {
 
   try {
     const orders = await prisma.order.findMany({
-      where: { studentId },
+      where: {
+        OR: [
+          { studentId },
+          { roomMembers: { some: { studentId } } },
+        ],
+      },
       orderBy: { id: "desc" },
+      distinct: ["id"],
       include: {
         canteen: true,
         items: { include: { canteenItem: true } },
+        room: true,
       },
     });
     res.json(orders);

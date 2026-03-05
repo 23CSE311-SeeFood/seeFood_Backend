@@ -3,6 +3,7 @@ const express = require("express");
 const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { assignTokenAndQueue } = require("../orders");
+const { broadcastToRoom, getRoomSnapshot } = require("../../lib/ws");
 
 const router = express.Router();
 
@@ -35,6 +36,13 @@ const ROOM_EXPIRY_MINUTES = Number.parseInt(
 
 function generateRoomCode() {
   return crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+async function pushRoomUpdate(code) {
+  const snapshot = await getRoomSnapshot(code);
+  if (snapshot) {
+    broadcastToRoom(code, { type: "room_update", room: snapshot });
+  }
 }
 
 async function calculateCartTotal(cartId) {
@@ -120,6 +128,8 @@ async function expireRooms() {
       where: { id: room.id },
       data: { status: "EXPIRED" },
     });
+
+    await pushRoomUpdate(room.code);
   }
 }
 
@@ -174,6 +184,8 @@ router.post("/create", async (req, res) => {
       return res.status(500).json({ error: "Failed to create room" });
     }
 
+    await pushRoomUpdate(room.code);
+
     res.status(201).json({
       roomId: room.id,
       code: room.code,
@@ -227,6 +239,8 @@ router.post("/join", async (req, res) => {
       update: {},
       create: { roomId: room.id, studentId },
     });
+
+    await pushRoomUpdate(room.code);
 
     res.json({
       status: "joined",
@@ -355,6 +369,8 @@ router.post("/:code/pay/create", async (req, res) => {
       });
     });
 
+    await pushRoomUpdate(room.code);
+
     res.json({
       razorpay: {
         orderId: razorpayOrder.id,
@@ -457,23 +473,28 @@ router.post("/:code/pay/verify", async (req, res) => {
 
       try {
         order = await prisma.$transaction(async (tx) => {
-          const created = await tx.order.create({
-            data: {
-              orderId: `room_${room.id}_${Date.now()}`,
-              status: "PAID",
-              total,
-              currency: "INR",
-              canteenId: room.canteenId,
-              roomId: room.id,
-              items: { create: mergedItems },
-            },
-            include: { items: true },
-          });
+        const created = await tx.order.create({
+          data: {
+            orderId: `room_${room.id}_${Date.now()}`,
+            status: "PAID",
+            total,
+            currency: "INR",
+            canteenId: room.canteenId,
+            roomId: room.id,
+            items: { create: mergedItems },
+          },
+          include: { items: true },
+        });
 
-          await tx.room.update({
-            where: { id: room.id },
-            data: { status: "ORDERED" },
-          });
+        await tx.roomMember.updateMany({
+          where: { roomId: room.id },
+          data: { orderId: created.id },
+        });
+
+        await tx.room.update({
+          where: { id: room.id },
+          data: { status: "ORDERED" },
+        });
 
           return created;
         });
@@ -492,6 +513,8 @@ router.post("/:code/pay/verify", async (req, res) => {
         await assignTokenAndQueue(order.id);
       }
     }
+
+    await pushRoomUpdate(room.code);
 
     res.json({
       status: "verified",
