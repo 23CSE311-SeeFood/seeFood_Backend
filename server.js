@@ -16,17 +16,17 @@ const roomsRouter = require("./routes/rooms");
 const microsoftRouter = require("./routes/microsoft");
 
 const app = express();
-const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001")
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001,http://localhost:5000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin: allowedOrigins,
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 const port = process.env.PORT || 3000;
 
 app.use(

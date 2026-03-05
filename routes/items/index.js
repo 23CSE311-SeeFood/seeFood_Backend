@@ -8,6 +8,23 @@ function parseId(value) {
   return Number.isInteger(num) ? num : null;
 }
 
+function normalizeCategory(value) {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim().toUpperCase();
+  const map = {
+    RICE: "RICE",
+    CURRIES: "CURRIES",
+    CURRY: "CURRIES",
+    ICECREAM: "ICECREAM",
+    "ICE CREAM": "ICECREAM",
+    ROOTI: "ROOTI",
+    ROTI: "ROOTI",
+    DRINKS: "DRINKS",
+    OTHER: "OTHER",
+  };
+  return map[s] || null;
+}
+
 async function ensureCanteen(req, res) {
   const canteenId = parseId(req.params.canteenId);
   if (canteenId === null) {
@@ -54,15 +71,8 @@ router.post("/", async (req, res) => {
     if (!foodType || !["VEG", "NON_VEG"].includes(String(foodType))) {
       return res.status(400).json({ error: "foodType must be VEG or NON_VEG" });
     }
-    const allowedCategories = [
-      "RICE",
-      "CURRIES",
-      "ICECREAM",
-      "ROOTI",
-      "DRINKS",
-      "OTHER",
-    ];
-    if (!category || !allowedCategories.includes(String(category))) {
+    const normalizedCategory = normalizeCategory(category);
+    if (!normalizedCategory) {
       return res.status(400).json({ error: "invalid category" });
     }
 
@@ -72,7 +82,7 @@ router.post("/", async (req, res) => {
         price: Number(price),
         rating: rating === undefined ? null : Number(rating),
         foodType: String(foodType),
-        category: String(category),
+        category: normalizedCategory,
         imageUrl: imageUrl ? String(imageUrl).trim() : null,
         canteenId,
       },
@@ -120,18 +130,11 @@ router.put("/:id", async (req, res) => {
       data.foodType = String(foodType);
     }
     if (category !== undefined) {
-      const allowedCategories = [
-        "RICE",
-        "CURRIES",
-        "ICECREAM",
-        "ROOTI",
-        "DRINKS",
-        "OTHER",
-      ];
-      if (!allowedCategories.includes(String(category))) {
+      const normalizedCategory = normalizeCategory(category);
+      if (!normalizedCategory) {
         return res.status(400).json({ error: "invalid category" });
       }
-      data.category = String(category);
+      data.category = normalizedCategory;
     }
     if (imageUrl !== undefined) {
       data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
