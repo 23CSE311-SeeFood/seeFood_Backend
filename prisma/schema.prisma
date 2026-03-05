@@ -17,6 +17,7 @@ model Canteen {
   orders  Order[]
   cashiers Cashier[]
   prebooks Prebook[]
+  rooms   Room[]
 }
 
 model CanteenItem {
@@ -61,6 +62,8 @@ model Student {
   carts      Cart[]
   orders     Order[]
   prebooks   Prebook[]
+  roomsOwned Room[]      @relation("RoomOwner")
+  roomMemberships RoomMember[]
 }
 
 model Admin {
@@ -134,6 +137,7 @@ model Order {
   tokenNumber   Int?
   isPrebooked   Boolean     @default(false)
   scheduledFor  DateTime?
+  roomId        Int?
   studentId     Int?
   cashierId     Int?
   canteenId     Int
@@ -142,12 +146,15 @@ model Order {
   student       Student?    @relation(fields: [studentId], references: [id], onDelete: SetNull)
   cashier       Cashier?    @relation(fields: [cashierId], references: [id], onDelete: SetNull)
   canteen       Canteen     @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  room          Room?       @relation(fields: [roomId], references: [id], onDelete: SetNull)
   items         OrderItem[]
 
   @@index([studentId])
   @@index([cashierId])
   @@index([canteenId])
   @@index([canteenId, scheduledFor])
+  @@index([roomId])
+  @@unique([roomId])
 }
 
 model OrderItem {
@@ -212,5 +219,70 @@ model PrebookItem {
   canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
 
   @@index([prebookId])
+  @@index([canteenItemId])
+}
+
+enum RoomStatus {
+  OPEN
+  ORDERED
+  EXPIRED
+  CANCELLED
+}
+
+enum RoomMemberStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELLED
+}
+
+model Room {
+  id         Int        @id @default(autoincrement())
+  code       String     @unique
+  ownerId    Int
+  canteenId  Int
+  status     RoomStatus @default(OPEN)
+  expiresAt  DateTime
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  owner      Student    @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  canteen    Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
+  members    RoomMember[]
+  orders     Order[]
+
+  @@index([ownerId])
+  @@index([canteenId])
+}
+
+model RoomMember {
+  id              Int              @id @default(autoincrement())
+  roomId          Int
+  studentId       Int
+  status          RoomMemberStatus @default(PENDING)
+  amount          Float?
+  razorpayOrderId String?          @unique
+  paymentId       String?          @unique
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  room            Room             @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  student         Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  items           RoomMemberItem[]
+
+  @@unique([roomId, studentId])
+  @@index([roomId])
+  @@index([studentId])
+}
+
+model RoomMemberItem {
+  id            Int         @id @default(autoincrement())
+  roomMemberId  Int
+  canteenItemId Int
+  quantity      Int
+  price         Float
+  total         Float
+  roomMember    RoomMember  @relation(fields: [roomMemberId], references: [id], onDelete: Cascade)
+  canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
+
+  @@index([roomMemberId])
   @@index([canteenItemId])
 }

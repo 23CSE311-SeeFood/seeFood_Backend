@@ -12,6 +12,7 @@ const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
 const { router: ordersRouter } = require("./routes/orders");
 const prebookRouter = require("./routes/prebook");
+const roomsRouter = require("./routes/rooms");
 const microsoftRouter = require("./routes/microsoft");
 
 const app = express();
@@ -53,6 +54,7 @@ app.use("/auth/microsoft", microsoftRouter);
 app.use("/cart", cartRouter);
 app.use("/orders", ordersRouter);
 app.use("/prebook", prebookRouter);
+app.use("/rooms", roomsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found" });
