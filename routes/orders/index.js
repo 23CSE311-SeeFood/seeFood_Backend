@@ -4,6 +4,8 @@ const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { getRedis } = require("../../lib/redis");
 const { broadcastToCanteen } = require("../../lib/ws");
+const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
+const { clearCartForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -494,15 +496,45 @@ router.post("/verify", async (req, res) => {
   }
 
   try {
-    const updated = await prisma.order.update({
-      where: { orderId: razorpay_order_id },
-      data: {
-        transactionId: razorpay_payment_id,
-        status: "PAID",
-      },
-      include: { items: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.update({
+        where: { orderId: razorpay_order_id },
+        data: {
+          transactionId: razorpay_payment_id,
+          status: "PAID",
+        },
+        include: {
+          items: { include: { canteenItem: true } },
+          canteen: true,
+          student: true,
+        },
+      });
+      if (order.studentId) {
+        await clearCartForStudent(tx, order.studentId);
+      }
+      return order;
     });
     const tokenNumber = await assignTokenAndQueue(updated.id);
+    if (updated.student?.email) {
+      try {
+        await enqueueOrderConfirmationEmail({
+          to: updated.student.email,
+          name: updated.student.name,
+          orderId: updated.orderId,
+          canteenName: updated.canteen?.name || null,
+          items: updated.items.map((item) => ({
+            name: item.canteenItem?.name || "Item",
+            quantity: item.quantity,
+            total: item.total,
+          })),
+          total: updated.total,
+          tokenNumber,
+          scheduledFor: updated.scheduledFor,
+        });
+      } catch (emailError) {
+        console.error("Order email failed:", emailError);
+      }
+    }
     res.json({ status: "verified", order: { ...updated, tokenNumber } });
   } catch (error) {
     console.error("Order verify failed:", error);

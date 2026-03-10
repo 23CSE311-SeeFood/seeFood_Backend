@@ -18,6 +18,8 @@
     "ci:simulate": "node scripts/simulate-ci.js"
   },
   "dependencies": {
+    "@azure/communication-email": "^1.1.0",
+    "@azure/service-bus": "^7.9.5",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",

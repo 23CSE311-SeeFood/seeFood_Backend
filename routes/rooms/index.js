@@ -4,6 +4,8 @@ const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { assignTokenAndQueue } = require("../orders");
 const { broadcastToRoom, getRoomSnapshot } = require("../../lib/ws");
+const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
+const { clearCartForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -436,9 +438,13 @@ router.post("/:code/pay/verify", async (req, res) => {
       return res.status(400).json({ error: "Order id mismatch" });
     }
 
-    const updatedMember = await prisma.roomMember.update({
-      where: { id: member.id },
-      data: { status: "PAID", paymentId: razorpay_payment_id },
+    const updatedMember = await prisma.$transaction(async (tx) => {
+      const updated = await tx.roomMember.update({
+        where: { id: member.id },
+        data: { status: "PAID", paymentId: razorpay_payment_id },
+      });
+      await clearCartForStudent(tx, studentId);
+      return updated;
     });
 
     const members = await prisma.roomMember.findMany({
@@ -473,18 +479,18 @@ router.post("/:code/pay/verify", async (req, res) => {
 
       try {
         order = await prisma.$transaction(async (tx) => {
-        const created = await tx.order.create({
-          data: {
-            orderId: `room_${room.id}_${Date.now()}`,
-            status: "PAID",
-            total,
-            currency: "INR",
-            canteenId: room.canteenId,
-            roomId: room.id,
-            items: { create: mergedItems },
-          },
-          include: { items: true },
-        });
+          const created = await tx.order.create({
+            data: {
+              orderId: `room_${room.id}_${Date.now()}`,
+              status: "PAID",
+              total,
+              currency: "INR",
+              canteenId: room.canteenId,
+              roomId: room.id,
+              items: { create: mergedItems },
+            },
+            include: { items: { include: { canteenItem: true } }, canteen: true },
+          });
 
         await tx.roomMember.updateMany({
           where: { roomId: room.id },
@@ -510,7 +516,34 @@ router.post("/:code/pay/verify", async (req, res) => {
       }
 
       if (order) {
-        await assignTokenAndQueue(order.id);
+        const tokenNumber = await assignTokenAndQueue(order.id);
+
+        const roomMembers = await prisma.roomMember.findMany({
+          where: { roomId: room.id },
+          include: { student: true },
+        });
+
+        for (const member of roomMembers) {
+          if (!member.student?.email) continue;
+          try {
+            await enqueueOrderConfirmationEmail({
+              to: member.student.email,
+              name: member.student.name,
+              orderId: order.orderId,
+              canteenName: order.canteen?.name || null,
+              items: order.items.map((item) => ({
+                name: item.canteenItem?.name || "Item",
+                quantity: item.quantity,
+                total: item.total,
+              })),
+              total: order.total,
+              tokenNumber,
+              scheduledFor: order.scheduledFor,
+            });
+          } catch (emailError) {
+            console.error("Room order email failed:", emailError);
+          }
+        }
       }
     }
 

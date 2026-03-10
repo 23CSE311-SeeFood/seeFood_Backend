@@ -3,6 +3,8 @@ const express = require("express");
 const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { assignTokenAndQueue } = require("../orders");
+const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
+const { clearCartForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -294,7 +296,7 @@ router.post("/verify", async (req, res) => {
   try {
     const prebook = await prisma.prebook.findUnique({
       where: { id: prebookId },
-      include: { items: true },
+      include: { items: { include: { canteenItem: true } }, student: true, canteen: true },
     });
     if (!prebook) {
       return res.status(404).json({ error: "Prebook not found" });
@@ -357,6 +359,8 @@ router.post("/verify", async (req, res) => {
         data: { status: "CONFIRMED" },
       });
 
+      await clearCartForStudent(tx, prebook.studentId);
+
       return order;
     });
 
@@ -364,6 +368,27 @@ router.post("/verify", async (req, res) => {
     const dueTime = new Date(Date.now() + LEAD_MINUTES * 60 * 1000);
     if (created.scheduledFor && created.scheduledFor <= dueTime) {
       tokenNumber = await assignTokenAndQueue(created.id);
+    }
+
+    if (prebook.student?.email) {
+      try {
+        await enqueueOrderConfirmationEmail({
+          to: prebook.student.email,
+          name: prebook.student.name,
+          orderId: created.orderId,
+          canteenName: prebook.canteen?.name || null,
+          items: prebook.items.map((item) => ({
+            name: item.canteenItem?.name || "Item",
+            quantity: item.quantity,
+            total: item.total,
+          })),
+          total: created.total,
+          tokenNumber,
+          scheduledFor: created.scheduledFor,
+        });
+      } catch (emailError) {
+        console.error("Prebook order email failed:", emailError);
+      }
     }
 
     res.json({ status: "verified", order: { ...created, tokenNumber } });
