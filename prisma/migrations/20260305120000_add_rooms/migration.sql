@@ -79,9 +79,6 @@ CREATE INDEX "RoomMemberItem_roomMemberId_idx" ON "RoomMemberItem"("roomMemberId
 CREATE INDEX "RoomMemberItem_canteenItemId_idx" ON "RoomMemberItem"("canteenItemId");
 
 -- CreateIndex
-CREATE INDEX "Order_roomId_idx" ON "Order"("roomId");
-
--- CreateIndex
 CREATE UNIQUE INDEX "Order_roomId_key" ON "Order"("roomId");
 
 -- AddForeignKey

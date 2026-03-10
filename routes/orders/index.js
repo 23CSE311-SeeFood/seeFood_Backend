@@ -5,7 +5,7 @@ const prisma = require("../../lib/prisma");
 const { getRedis } = require("../../lib/redis");
 const { broadcastToCanteen } = require("../../lib/ws");
 const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
-const { clearCartForStudent } = require("../../lib/cart");
+const { clearCartItemsForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -46,6 +46,10 @@ function secondsUntilEndOfDay(date = new Date()) {
 
 function getQueueScore(tokenNumber, enqueueTsMs = Date.now()) {
   return tokenNumber + enqueueTsMs / 1e13;
+}
+
+function getQueueDateFromOrder(order) {
+  return order.scheduledFor || order.createdAt;
 }
 
 function buildQueuePayload(order, item, tokenNumber) {
@@ -98,7 +102,7 @@ async function getOrderQueueInfo(orderId) {
   if (!order || !order.tokenNumber) return null;
 
   const redis = await getRedis();
-  const queueDate = order.scheduledFor || order.createdAt;
+  const queueDate = getQueueDateFromOrder(order);
   const dateKey = getDateKey(new Date(queueDate));
   const queues = [];
 
@@ -296,8 +300,8 @@ async function assignTokenAndQueue(orderId) {
       return order.tokenNumber;
     }
 
-    const serviceDate = order.scheduledFor || new Date();
-    const dateKey = getDateKey(new Date(serviceDate));
+    const queueDate = getQueueDateFromOrder(order);
+    const dateKey = getDateKey(new Date(queueDate));
     const tokenKey = `token:${order.canteenId}:${dateKey}`;
 
     const tokenNumber = await redis.incr(tokenKey);
@@ -510,7 +514,8 @@ router.post("/verify", async (req, res) => {
         },
       });
       if (order.studentId) {
-        await clearCartForStudent(tx, order.studentId);
+        const itemIds = order.items.map((item) => item.canteenItemId);
+        await clearCartItemsForStudent(tx, order.studentId, itemIds);
       }
       return order;
     });
@@ -672,7 +677,7 @@ router.put("/items/:orderItemId/ready", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -727,7 +732,7 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -769,7 +774,7 @@ router.put("/items/:orderItemId/start", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -811,7 +816,7 @@ router.put("/items/:orderItemId/delayed", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -855,7 +860,7 @@ router.put("/items/:orderItemId/requeue", async (req, res) => {
       where: { id: item.id },
       include: { canteenItem: true },
     });
-    const dateKey = getDateKey(new Date(order.createdAt));
+    const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
     await enqueueItem(order, full, order.tokenNumber, dateKey);
 
     const queueInfo = await getOrderQueueInfo(item.orderId);

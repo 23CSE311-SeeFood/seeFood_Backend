@@ -184,6 +184,7 @@ enum OrderItemStatus {
 
 enum PrebookStatus {
   PENDING_PAYMENT
+  PROCESSING
   CONFIRMED
   EXPIRED
   CANCELLED
@@ -196,7 +197,7 @@ model Prebook {
   slotStart       DateTime
   slotEnd         DateTime
   status          PrebookStatus @default(PENDING_PAYMENT)
-  total           Float
+  total           Decimal       @db.Decimal(12, 2)
   currency        String        @default("INR")
   razorpayOrderId String?       @unique
   expiresAt       DateTime
@@ -208,6 +209,7 @@ model Prebook {
 
   @@index([studentId])
   @@index([canteenId, slotStart])
+  @@index([status, expiresAt])
 }
 
 model PrebookItem {
@@ -215,8 +217,8 @@ model PrebookItem {
   prebookId     Int
   canteenItemId Int
   quantity      Int
-  price         Float
-  total         Float
+  price         Decimal       @db.Decimal(12, 2)
+  total         Decimal       @db.Decimal(12, 2)
   prebook       Prebook     @relation(fields: [prebookId], references: [id], onDelete: Cascade)
   canteenItem   CanteenItem @relation(fields: [canteenItemId], references: [id], onDelete: Cascade)
 
@@ -250,10 +252,11 @@ model Room {
   owner      Student    @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   canteen    Canteen    @relation(fields: [canteenId], references: [id], onDelete: Cascade)
   members    RoomMember[]
-  orders     Order[]
+  order      Order?
 
   @@index([ownerId])
   @@index([canteenId])
+  @@index([status, expiresAt])
 }
 
 model RoomMember {

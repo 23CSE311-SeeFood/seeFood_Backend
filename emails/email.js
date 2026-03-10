@@ -13,8 +13,19 @@ function getEmailClient() {
 }
 
 function formatMoney(value) {
-  if (typeof value !== "number") return "-";
-  return `₹${value.toFixed(2)}`;
+  const num = typeof value === "number" ? value : Number(value);
+  if (Number.isNaN(num)) return "-";
+  return `₹${num.toFixed(2)}`;
+}
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function buildItemsHtml(items = []) {
@@ -23,7 +34,9 @@ function buildItemsHtml(items = []) {
     .map(
       (item) => `
       <tr>
-        <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;">${item.name}</td>
+        <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;">${escapeHtml(
+          item.name
+        )}</td>
         <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;text-align:center;">${item.quantity}</td>
         <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;text-align:right;">${formatMoney(item.total)}</td>
       </tr>
@@ -45,7 +58,9 @@ function buildItemsHtml(items = []) {
 }
 
 function buildOrderEmail({ name, orderId, canteenName, items, total, tokenNumber, scheduledFor }) {
-  const greeting = name ? `Hi ${name},` : "Hi,";
+  const greeting = name ? `Hi ${escapeHtml(name)},` : "Hi,";
+  const safeOrderId = escapeHtml(orderId);
+  const safeCanteen = escapeHtml(canteenName || "-");
   const tokenLine = tokenNumber ? `<strong>Token:</strong> ${tokenNumber}` : "";
   const scheduleLine = scheduledFor
     ? `<strong>Pickup Time:</strong> ${new Date(scheduledFor).toLocaleString()}`
@@ -56,8 +71,8 @@ function buildOrderEmail({ name, orderId, canteenName, items, total, tokenNumber
         <h2 style="margin:0 0 8px;color:#1f2937;">Order Confirmed</h2>
         <p style="margin:0 0 16px;color:#4b5563;">${greeting} your order has been placed successfully.</p>
         <div style="background:#f9fafb;border-radius:10px;padding:16px;margin-bottom:16px;">
-          <p style="margin:0 0 6px;"><strong>Order ID:</strong> ${orderId}</p>
-          <p style="margin:0 0 6px;"><strong>Canteen:</strong> ${canteenName || "-"}</p>
+          <p style="margin:0 0 6px;"><strong>Order ID:</strong> ${safeOrderId}</p>
+          <p style="margin:0 0 6px;"><strong>Canteen:</strong> ${safeCanteen}</p>
           ${tokenLine ? `<p style="margin:0 0 6px;">${tokenLine}</p>` : ""}
           ${scheduleLine ? `<p style="margin:0;">${scheduleLine}</p>` : ""}
         </div>
@@ -112,13 +127,7 @@ async function sendOrderConfirmationEmail({
   };
 
   const poller = await clientInstance.beginSend(emailMessage);
-  console.log("Sending email to:", to);
-  try {
-    await poller.pollUntilDone();
-    console.log("Email sent to:", to);
-  } catch (error) {
-    console.error("Failed to send email:", error);
-  }
+  await poller.pollUntilDone();
 }
 
 module.exports = { sendOrderConfirmationEmail };

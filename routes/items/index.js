@@ -71,22 +71,27 @@ router.post("/", async (req, res) => {
     if (!foodType || !["VEG", "NON_VEG"].includes(String(foodType))) {
       return res.status(400).json({ error: "foodType must be VEG or NON_VEG" });
     }
-    const normalizedCategory = normalizeCategory(category);
-    if (!normalizedCategory) {
-      return res.status(400).json({ error: "invalid category" });
+    let normalizedCategory = null;
+    if (category !== undefined && category !== null) {
+      normalizedCategory = normalizeCategory(category);
+      if (!normalizedCategory) {
+        return res.status(400).json({ error: "invalid category" });
+      }
     }
 
-    const created = await prisma.canteenItem.create({
-      data: {
-        name: name.trim(),
-        price: Number(price),
-        rating: rating === undefined ? null : Number(rating),
-        foodType: String(foodType),
-        category: normalizedCategory,
-        imageUrl: imageUrl ? String(imageUrl).trim() : null,
-        canteenId,
-      },
-    });
+    const data = {
+      name: name.trim(),
+      price: Number(price),
+      rating: rating === undefined ? null : Number(rating),
+      foodType: String(foodType),
+      imageUrl: imageUrl ? String(imageUrl).trim() : null,
+      canteenId,
+    };
+    if (normalizedCategory) {
+      data.category = normalizedCategory;
+    }
+
+    const created = await prisma.canteenItem.create({ data });
     res.status(201).json(created);
   } catch (error) {
     res.status(500).json({ error: "Failed to create item" });

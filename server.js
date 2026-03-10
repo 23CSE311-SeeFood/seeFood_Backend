@@ -12,7 +12,7 @@ const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
 const { router: ordersRouter } = require("./routes/orders");
 const prebookRouter = require("./routes/prebook");
-const roomsRouter = require("./routes/rooms");
+const { router: roomsRouter, startRoomExpiryScheduler } = require("./routes/rooms");
 const microsoftRouter = require("./routes/microsoft");
 
 const app = express();
@@ -66,6 +66,8 @@ attachWebSocket(server);
 server.listen(port, "0.0.0.0", () => {
   console.log(`Server listening on port ${port}`);
 });
+
+startRoomExpiryScheduler();
 
 process.on("SIGINT", async () => {
   await prisma.$disconnect();

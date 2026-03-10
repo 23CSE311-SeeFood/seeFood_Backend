@@ -13,7 +13,7 @@ CREATE TABLE "Prebook" (
     "slotStart" TIMESTAMP(3) NOT NULL,
     "slotEnd" TIMESTAMP(3) NOT NULL,
     "status" "PrebookStatus" NOT NULL DEFAULT 'PENDING_PAYMENT',
-    "total" DOUBLE PRECISION NOT NULL,
+    "total" NUMERIC(12,2) NOT NULL,
     "currency" TEXT NOT NULL DEFAULT 'INR',
     "razorpayOrderId" TEXT,
     "expiresAt" TIMESTAMP(3) NOT NULL,
@@ -29,8 +29,8 @@ CREATE TABLE "PrebookItem" (
     "prebookId" INTEGER NOT NULL,
     "canteenItemId" INTEGER NOT NULL,
     "quantity" INTEGER NOT NULL,
-    "price" DOUBLE PRECISION NOT NULL,
-    "total" DOUBLE PRECISION NOT NULL,
+    "price" NUMERIC(12,2) NOT NULL,
+    "total" NUMERIC(12,2) NOT NULL,
 
     CONSTRAINT "PrebookItem_pkey" PRIMARY KEY ("id")
 );

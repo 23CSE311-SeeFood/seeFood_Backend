@@ -14,11 +14,14 @@ async function main() {
   }
 }
 
-process.on("SIGINT", async () => {
+async function shutdown() {
   if (worker?.close) {
     await worker.close();
   }
   process.exit(0);
-});
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 main();

@@ -5,7 +5,8 @@ const prisma = require("../../lib/prisma");
 const { assignTokenAndQueue } = require("../orders");
 const { broadcastToRoom, getRoomSnapshot } = require("../../lib/ws");
 const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
-const { clearCartForStudent } = require("../../lib/cart");
+const { clearCartItemsForStudent } = require("../../lib/cart");
+const { getRedis } = require("../../lib/redis");
 
 const router = express.Router();
 
@@ -115,10 +116,24 @@ async function expireRooms() {
   const razorpay = getRazorpay();
 
   for (const room of rooms) {
+    let allRefunded = true;
     for (const member of room.members) {
-      if (member.status === "PAID" && razorpay) {
-        await refundMemberPayment(member, razorpay);
-      } else if (member.status === "PENDING") {
+      if (member.status === "PAID") {
+        if (!razorpay) {
+          allRefunded = false;
+          continue;
+        }
+        const ok = await refundMemberPayment(member, razorpay);
+        if (!ok) allRefunded = false;
+      }
+    }
+
+    if (!allRefunded) {
+      continue;
+    }
+
+    for (const member of room.members) {
+      if (member.status === "PENDING") {
         await prisma.roomMember.update({
           where: { id: member.id },
           data: { status: "CANCELLED" },
@@ -140,12 +155,30 @@ function startRoomExpiryScheduler() {
   if (roomExpiryStarted) return;
   roomExpiryStarted = true;
   const interval = setInterval(() => {
-    expireRooms().catch((error) => console.error("Room expiry error:", error));
+    (async () => {
+      const redis = await getRedis();
+      const lockKey = "room-expiry-lock";
+      const lockValue = crypto.randomUUID
+        ? crypto.randomUUID()
+        : crypto.randomBytes(16).toString("hex");
+      const ok = await redis.set(lockKey, lockValue, { NX: true, PX: 55000 });
+      if (!ok) return;
+      try {
+        await expireRooms();
+      } finally {
+        try {
+          const current = await redis.get(lockKey);
+          if (current === lockValue) {
+            await redis.del(lockKey);
+          }
+        } catch (error) {
+          console.error("Room expiry lock cleanup failed:", error);
+        }
+      }
+    })().catch((error) => console.error("Room expiry error:", error));
   }, 60 * 1000);
   interval.unref();
 }
-
-startRoomExpiryScheduler();
 
 router.post("/create", async (req, res) => {
   const ownerId = parseId(req.body.ownerId);
@@ -345,21 +378,46 @@ router.post("/:code/pay/create", async (req, res) => {
       return res.status(400).json({ error: "Cart is empty" });
     }
 
+    const currentMember = await prisma.roomMember.findUnique({
+      where: { id: member.id },
+    });
+    if (
+      currentMember?.razorpayOrderId &&
+      currentMember.status !== "PAID" &&
+      currentMember.amount !== null &&
+      Number(currentMember.amount) === Number(result.total)
+    ) {
+      return res.json({
+        razorpay: {
+          orderId: currentMember.razorpayOrderId,
+          key: process.env.RAZORPAY_KEY_ID,
+          amount: Math.round(Number(currentMember.amount) * 100),
+          currency: "INR",
+        },
+      });
+    }
+
     const razorpayOrder = await razorpay.orders.create({
       amount: Math.round(result.total * 100),
       currency: "INR",
       receipt: `room_${room.id}_${studentId}_${Date.now()}`,
     });
 
-    await prisma.$transaction(async (tx) => {
-      await tx.roomMemberItem.deleteMany({ where: { roomMemberId: member.id } });
-      await tx.roomMember.update({
-        where: { id: member.id },
+    const updated = await prisma.$transaction(async (tx) => {
+      const updateResult = await tx.roomMember.updateMany({
+        where: {
+          id: member.id,
+          razorpayOrderId: currentMember?.razorpayOrderId || null,
+        },
         data: {
           amount: result.total,
           razorpayOrderId: razorpayOrder.id,
         },
       });
+      if (updateResult.count === 0) {
+        return { raced: true };
+      }
+      await tx.roomMemberItem.deleteMany({ where: { roomMemberId: member.id } });
       await tx.roomMemberItem.createMany({
         data: result.items.map((item) => ({
           roomMemberId: member.id,
@@ -369,7 +427,24 @@ router.post("/:code/pay/create", async (req, res) => {
           total: item.quantity * item.canteenItem.price,
         })),
       });
+      return { raced: false };
     });
+
+    if (updated.raced) {
+      const latest = await prisma.roomMember.findUnique({
+        where: { id: member.id },
+      });
+      if (latest?.razorpayOrderId) {
+        return res.json({
+          razorpay: {
+            orderId: latest.razorpayOrderId,
+            key: process.env.RAZORPAY_KEY_ID,
+            amount: Math.round(Number(latest.amount || result.total) * 100),
+            currency: "INR",
+          },
+        });
+      }
+    }
 
     await pushRoomUpdate(room.code);
 
@@ -443,7 +518,11 @@ router.post("/:code/pay/verify", async (req, res) => {
         where: { id: member.id },
         data: { status: "PAID", paymentId: razorpay_payment_id },
       });
-      await clearCartForStudent(tx, studentId);
+      const memberItems = await tx.roomMemberItem.findMany({
+        where: { roomMemberId: member.id },
+      });
+      const itemIds = memberItems.map((item) => item.canteenItemId);
+      await clearCartItemsForStudent(tx, studentId, itemIds);
       return updated;
     });
 
@@ -453,6 +532,8 @@ router.post("/:code/pay/verify", async (req, res) => {
     const allPaid = members.every((m) => m.status === "PAID");
 
     let order = null;
+    let tokenNumber = null;
+    let tokenPending = false;
     if (allPaid) {
       const existing = await prisma.order.findUnique({
         where: { roomId: room.id },
@@ -516,7 +597,12 @@ router.post("/:code/pay/verify", async (req, res) => {
       }
 
       if (order) {
-        const tokenNumber = await assignTokenAndQueue(order.id);
+        try {
+          tokenNumber = await assignTokenAndQueue(order.id);
+        } catch (error) {
+          console.error("Token assignment failed:", error);
+          tokenPending = true;
+        }
 
         const roomMembers = await prisma.roomMember.findMany({
           where: { roomId: room.id },
@@ -556,7 +642,8 @@ router.post("/:code/pay/verify", async (req, res) => {
         status: updatedMember.status,
       },
       allPaid,
-      order,
+      order: order ? { ...order, tokenNumber } : null,
+      tokenPending,
     });
   } catch (error) {
     console.error("Room pay verify failed:", error);
@@ -564,4 +651,4 @@ router.post("/:code/pay/verify", async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, startRoomExpiryScheduler };

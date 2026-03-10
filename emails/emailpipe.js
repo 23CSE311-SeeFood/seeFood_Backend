@@ -12,24 +12,26 @@ async function sendTestMessage() {
   const client = new ServiceBusClient(connectionString);
   const sender = client.createSender(queueName);
 
-  await sender.sendMessages({
-    body: {
-      type: "order_confirmation",
-      payload: {
-        to: "test@example.com",
-        name: "Test",
-        orderId: "test-order",
-        canteenName: "Test Canteen",
-        items: [{ name: "Test Item", quantity: 1, total: 100 }],
-        total: 100,
-        tokenNumber: 1,
-        scheduledFor: null,
+  try {
+    await sender.sendMessages({
+      body: {
+        type: "order_confirmation",
+        payload: {
+          to: "test@example.com",
+          name: "Test",
+          orderId: "test-order",
+          canteenName: "Test Canteen",
+          items: [{ name: "Test Item", quantity: 1, total: 100 }],
+          total: 100,
+          tokenNumber: 1,
+          scheduledFor: null,
+        },
       },
-    },
-  });
-
-  await sender.close();
-  await client.close();
+    });
+  } finally {
+    await sender.close();
+    await client.close();
+  }
 }
 
 module.exports = { sendTestMessage };

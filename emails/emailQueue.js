@@ -52,13 +52,13 @@ async function startEmailWorker() {
 
   receiver.subscribe({
     processMessage: async (message) => {
-      console.log("Processing message:", message.body);
       if (!message?.body) return;
       const { type, payload } = message.body;
       if (type === "order_confirmation") {
-        console.log("Sending order confirmation email");
+        const orderIdentifier =
+          payload?.orderId || payload?.order_id || payload?.id || "unknown";
+        console.log(`Processing email type=${type} order=${orderIdentifier}`);
         await sendOrderConfirmationEmail(payload);
-        console.log("Email sent successfully");
       }
     },
     processError: async (error) => {

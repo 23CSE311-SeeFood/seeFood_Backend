@@ -1,10 +1,12 @@
 const crypto = require("crypto");
 const express = require("express");
 const Razorpay = require("razorpay");
+const { DateTime } = require("luxon");
+const { Prisma } = require("@prisma/client");
 const prisma = require("../../lib/prisma");
 const { assignTokenAndQueue } = require("../orders");
 const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
-const { clearCartForStudent } = require("../../lib/cart");
+const { clearCartItemsForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -48,33 +50,34 @@ const RESERVATION_MINUTES = Number.parseInt(
   process.env.PREBOOK_RESERVATION_MINUTES || "15",
   10
 );
+const CANTEEN_TIMEZONE = process.env.CANTEEN_TIMEZONE || "Asia/Kolkata";
 
-function getSlotBounds(date) {
-  const open = new Date(date);
-  open.setHours(OPEN_HOUR, 0, 0, 0);
-  const close = new Date(date);
-  close.setHours(CLOSE_HOUR, 0, 0, 0);
+function getSlotBounds(dateTime) {
+  const open = dateTime.set({
+    hour: OPEN_HOUR,
+    minute: 0,
+    second: 0,
+    millisecond: 0,
+  });
+  const close = dateTime.set({
+    hour: CLOSE_HOUR,
+    minute: 0,
+    second: 0,
+    millisecond: 0,
+  });
   return { open, close };
 }
 
 function getSlotEnd(slotStart) {
-  return new Date(slotStart.getTime() + SLOT_MINUTES * 60 * 1000);
+  return slotStart.plus({ minutes: SLOT_MINUTES });
 }
 
 function isAlignedToSlot(date) {
-  return (
-    date.getMinutes() % SLOT_MINUTES === 0 &&
-    date.getSeconds() === 0 &&
-    date.getMilliseconds() === 0
-  );
+  return date.minute % SLOT_MINUTES === 0 && date.second === 0 && date.millisecond === 0;
 }
 
 function isSameDay(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return a.hasSame(b, "day");
 }
 
 async function calculateCartTotal(cartId) {
@@ -91,13 +94,19 @@ async function calculateCartTotal(cartId) {
   return { items, total };
 }
 
-async function countSlotUsage(canteenId, slotStart, excludePrebookId = null) {
+async function countSlotUsage(
+  canteenId,
+  slotStart,
+  excludePrebookId = null,
+  db = prisma
+) {
   const now = new Date();
   const prebookWhere = {
     canteenId,
     slotStart,
     OR: [
       { status: "CONFIRMED" },
+      { status: "PROCESSING" },
       { status: "PENDING_PAYMENT", expiresAt: { gt: now } },
     ],
   };
@@ -106,8 +115,8 @@ async function countSlotUsage(canteenId, slotStart, excludePrebookId = null) {
   }
 
   const [prebookCount, orderCount] = await Promise.all([
-    prisma.prebook.count({ where: prebookWhere }),
-    prisma.order.count({
+    db.prebook.count({ where: prebookWhere }),
+    db.order.count({
       where: {
         canteenId,
         isPrebooked: true,
@@ -130,27 +139,26 @@ router.get("/slots", async (req, res) => {
     return res.status(400).json({ error: "date is required (YYYY-MM-DD)" });
   }
 
-  const date = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
+  const date = DateTime.fromISO(dateStr, { zone: CANTEEN_TIMEZONE }).startOf("day");
+  if (!date.isValid) {
     return res.status(400).json({ error: "invalid date" });
   }
 
-  const today = new Date();
+  const today = DateTime.now().setZone(CANTEEN_TIMEZONE);
   if (!isSameDay(date, today)) {
     return res.status(400).json({ error: "only same-day slots are supported" });
   }
 
   const { open, close } = getSlotBounds(date);
-  const slotMs = SLOT_MINUTES * 60 * 1000;
   const slots = [];
 
-  for (let ts = open.getTime(); ts + slotMs <= close.getTime(); ts += slotMs) {
-    slots.push(new Date(ts));
+  for (let cursor = open; cursor.plus({ minutes: SLOT_MINUTES }) <= close; cursor = cursor.plus({ minutes: SLOT_MINUTES })) {
+    slots.push(cursor);
   }
 
   try {
     const usage = await Promise.all(
-      slots.map((slotStart) => countSlotUsage(canteenId, slotStart))
+      slots.map((slotStart) => countSlotUsage(canteenId, slotStart.toJSDate()))
     );
 
     res.json({
@@ -160,8 +168,8 @@ router.get("/slots", async (req, res) => {
       capacity: MAX_ORDERS_PER_SLOT,
       workingHours: { openHour: OPEN_HOUR, closeHour: CLOSE_HOUR },
       slots: slots.map((slotStart, idx) => ({
-        start: slotStart.toISOString(),
-        end: getSlotEnd(slotStart).toISOString(),
+        start: slotStart.toISO(),
+        end: getSlotEnd(slotStart).toISO(),
         remaining: Math.max(0, MAX_ORDERS_PER_SLOT - usage[idx]),
       })),
     });
@@ -182,12 +190,12 @@ router.post("/create", async (req, res) => {
     return res.status(400).json({ error: "studentId must be an integer" });
   }
 
-  const slotStart = new Date(req.body.slotStart);
-  if (Number.isNaN(slotStart.getTime())) {
+  const slotStart = DateTime.fromISO(req.body.slotStart, { zone: CANTEEN_TIMEZONE });
+  if (!slotStart.isValid) {
     return res.status(400).json({ error: "slotStart is required (ISO string)" });
   }
 
-  const now = new Date();
+  const now = DateTime.now().setZone(CANTEEN_TIMEZONE);
   if (!isSameDay(slotStart, now)) {
     return res.status(400).json({ error: "slot must be for today" });
   }
@@ -196,10 +204,12 @@ router.post("/create", async (req, res) => {
   }
   const { open, close } = getSlotBounds(slotStart);
   const slotEnd = getSlotEnd(slotStart);
+  const slotStartDate = slotStart.toJSDate();
+  const slotEndDate = slotEnd.toJSDate();
   if (slotStart < open || slotEnd > close) {
     return res.status(400).json({ error: "slot is outside working hours" });
   }
-  if (slotStart.getTime() < now.getTime()) {
+  if (slotStart.toMillis() < now.toMillis()) {
     return res.status(400).json({ error: "slotStart must be in the future" });
   }
 
@@ -214,11 +224,6 @@ router.post("/create", async (req, res) => {
       return res.status(400).json({ error: "Cart is empty" });
     }
 
-    const used = await countSlotUsage(cart.canteenId, slotStart);
-    if (used >= MAX_ORDERS_PER_SLOT) {
-      return res.status(409).json({ error: "Slot is full" });
-    }
-
     const amountPaise = Math.round(result.total * 100);
     const razorpayOrder = await razorpay.orders.create({
       amount: amountPaise,
@@ -230,31 +235,53 @@ router.post("/create", async (req, res) => {
       Date.now() + RESERVATION_MINUTES * 60 * 1000
     );
 
-    const prebook = await prisma.prebook.create({
-      data: {
-        studentId,
-        canteenId: cart.canteenId,
-        slotStart,
-        slotEnd,
-        total: result.total,
-        currency: "INR",
-        razorpayOrderId: razorpayOrder.id,
-        expiresAt,
-        items: {
-          create: result.items.map((item) => ({
-            canteenItemId: item.canteenItemId,
-            quantity: item.quantity,
-            price: item.canteenItem.price,
-            total: item.quantity * item.canteenItem.price,
-          })),
+    let prebook = null;
+    try {
+      prebook = await prisma.$transaction(
+        async (tx) => {
+          const used = await countSlotUsage(
+            cart.canteenId,
+            slotStartDate,
+            null,
+            tx
+          );
+          if (used >= MAX_ORDERS_PER_SLOT) {
+            throw new Error("SLOT_FULL");
+          }
+          return tx.prebook.create({
+            data: {
+              studentId,
+              canteenId: cart.canteenId,
+              slotStart: slotStartDate,
+              slotEnd: slotEndDate,
+              total: result.total,
+              currency: "INR",
+              razorpayOrderId: razorpayOrder.id,
+              expiresAt,
+              items: {
+                create: result.items.map((item) => ({
+                  canteenItemId: item.canteenItemId,
+                  quantity: item.quantity,
+                  price: item.canteenItem.price,
+                  total: item.quantity * item.canteenItem.price,
+                })),
+              },
+            },
+          });
         },
-      },
-    });
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (error) {
+      if (error.message === "SLOT_FULL") {
+        return res.status(409).json({ error: "Slot is full" });
+      }
+      throw error;
+    }
 
     res.status(201).json({
       prebookId: prebook.id,
-      slotStart: slotStart.toISOString(),
-      slotEnd: slotEnd.toISOString(),
+      slotStart: slotStart.toISO(),
+      slotEnd: slotEnd.toISO(),
       expiresAt: prebook.expiresAt.toISOString(),
       razorpay: {
         orderId: razorpayOrder.id,
@@ -294,75 +321,118 @@ router.post("/verify", async (req, res) => {
   }
 
   try {
-    const prebook = await prisma.prebook.findUnique({
-      where: { id: prebookId },
-      include: { items: { include: { canteenItem: true } }, student: true, canteen: true },
-    });
-    if (!prebook) {
-      return res.status(404).json({ error: "Prebook not found" });
-    }
-    if (prebook.razorpayOrderId !== razorpay_order_id) {
-      return res.status(400).json({ error: "Order id mismatch" });
-    }
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const now = new Date();
+        const claim = await tx.prebook.updateMany({
+          where: { id: prebookId, status: "PENDING_PAYMENT" },
+          data: { status: "PROCESSING" },
+        });
 
-    if (prebook.status === "CONFIRMED") {
-      const existing = await prisma.order.findUnique({
-        where: { orderId: prebook.razorpayOrderId },
-        include: { items: true },
-      });
-      return res.json({ status: "verified", order: existing });
-    }
+        if (claim.count === 0) {
+          const existing = await tx.order.findUnique({
+            where: { orderId: razorpay_order_id },
+            include: { items: true },
+          });
+          return { alreadyProcessed: true, order: existing };
+        }
 
-    if (prebook.expiresAt.getTime() < Date.now()) {
-      await prisma.prebook.update({
-        where: { id: prebook.id },
-        data: { status: "EXPIRED" },
-      });
-      return res.status(400).json({ error: "Prebook expired" });
-    }
+        const prebook = await tx.prebook.findUnique({
+          where: { id: prebookId },
+          include: { items: { include: { canteenItem: true } }, student: true, canteen: true },
+        });
+        if (!prebook) {
+          return { error: "PREBOOK_NOT_FOUND" };
+        }
+        if (prebook.razorpayOrderId !== razorpay_order_id) {
+          await tx.prebook.update({
+            where: { id: prebookId },
+            data: { status: "PENDING_PAYMENT" },
+          });
+          return { error: "ORDER_ID_MISMATCH" };
+        }
+        if (prebook.expiresAt.getTime() < now.getTime()) {
+          await tx.prebook.update({
+            where: { id: prebookId },
+            data: { status: "EXPIRED" },
+          });
+          return { error: "PREBOOK_EXPIRED" };
+        }
 
-    const used = await countSlotUsage(prebook.canteenId, prebook.slotStart, prebook.id);
-    if (used >= MAX_ORDERS_PER_SLOT) {
-      await prisma.prebook.update({
-        where: { id: prebook.id },
-        data: { status: "CANCELLED" },
-      });
-      return res.status(409).json({ error: "Slot is full" });
-    }
+        const used = await countSlotUsage(
+          prebook.canteenId,
+          prebook.slotStart,
+          prebook.id,
+          tx
+        );
+        if (used >= MAX_ORDERS_PER_SLOT) {
+          await tx.prebook.update({
+            where: { id: prebookId },
+            data: { status: "CANCELLED" },
+          });
+          return { error: "SLOT_FULL" };
+        }
 
-    const created = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
-        data: {
-          orderId: razorpay_order_id,
-          transactionId: razorpay_payment_id,
-          status: "PAID",
-          total: prebook.total,
-          currency: prebook.currency,
-          studentId: prebook.studentId,
-          canteenId: prebook.canteenId,
-          isPrebooked: true,
-          scheduledFor: prebook.slotStart,
-          items: {
-            create: prebook.items.map((item) => ({
-              canteenItemId: item.canteenItemId,
-              quantity: item.quantity,
-              price: item.price,
-              total: item.total,
-            })),
+        const order = await tx.order.create({
+          data: {
+            orderId: razorpay_order_id,
+            transactionId: razorpay_payment_id,
+            status: "PAID",
+            total: Number(prebook.total),
+            currency: prebook.currency,
+            studentId: prebook.studentId,
+            canteenId: prebook.canteenId,
+            isPrebooked: true,
+            scheduledFor: prebook.slotStart,
+            items: {
+              create: prebook.items.map((item) => ({
+                canteenItemId: item.canteenItemId,
+                quantity: item.quantity,
+                price: Number(item.price),
+                total: Number(item.total),
+              })),
+            },
           },
-        },
-        include: { items: true },
-      });
+          include: { items: true },
+        });
 
-      await tx.prebook.update({
-        where: { id: prebook.id },
-        data: { status: "CONFIRMED" },
-      });
+        await tx.prebook.update({
+          where: { id: prebookId },
+          data: { status: "CONFIRMED" },
+        });
 
-      await clearCartForStudent(tx, prebook.studentId);
+        const itemIds = prebook.items.map((item) => item.canteenItemId);
+        await clearCartItemsForStudent(tx, prebook.studentId, itemIds);
 
-      return order;
-    });
+        return { order, prebook };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+
+    if (result.alreadyProcessed) {
+      if (result.order) {
+        return res.json({ status: "verified", order: result.order });
+      }
+      return res.status(409).json({ error: "Prebook already processed" });
+    }
+    if (result.error) {
+      if (result.error === "PREBOOK_NOT_FOUND") {
+        return res.status(404).json({ error: "Prebook not found" });
+      }
+      if (result.error === "ORDER_ID_MISMATCH") {
+        return res.status(400).json({ error: "Order id mismatch" });
+      }
+      if (result.error === "PREBOOK_EXPIRED") {
+        return res.status(400).json({ error: "Prebook expired" });
+      }
+      if (result.error === "SLOT_FULL") {
+        return res.status(409).json({ error: "Slot is full" });
+      }
+      return res.status(400).json({ error: "Prebook failed" });
+    }
+
+    const created = result.order;
+    const prebook = result.prebook;
 
     let tokenNumber = null;
     const dueTime = new Date(Date.now() + LEAD_MINUTES * 60 * 1000);
@@ -380,7 +450,7 @@ router.post("/verify", async (req, res) => {
           items: prebook.items.map((item) => ({
             name: item.canteenItem?.name || "Item",
             quantity: item.quantity,
-            total: item.total,
+            total: Number(item.total),
           })),
           total: created.total,
           tokenNumber,
