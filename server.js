@@ -10,21 +10,23 @@ const itemsRouter = require("./routes/items");
 const paymentsRouter = require("./routes/payments");
 const authRouter = require("./routes/auth");
 const cartRouter = require("./routes/cart");
-const ordersRouter = require("./routes/orders");
+const { router: ordersRouter } = require("./routes/orders");
+const prebookRouter = require("./routes/prebook");
+const { router: roomsRouter, startRoomExpiryScheduler } = require("./routes/rooms");
 const microsoftRouter = require("./routes/microsoft");
 
 const app = express();
-const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001")
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:3001,http://localhost:5000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin: allowedOrigins,
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 const port = process.env.PORT || 3000;
 
 app.use(
@@ -51,6 +53,8 @@ app.use("/auth", authRouter);
 app.use("/auth/microsoft", microsoftRouter);
 app.use("/cart", cartRouter);
 app.use("/orders", ordersRouter);
+app.use("/prebook", prebookRouter);
+app.use("/rooms", roomsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "Not Found" });
@@ -62,6 +66,8 @@ attachWebSocket(server);
 server.listen(port, "0.0.0.0", () => {
   console.log(`Server listening on port ${port}`);
 });
+
+startRoomExpiryScheduler();
 
 process.on("SIGINT", async () => {
   await prisma.$disconnect();

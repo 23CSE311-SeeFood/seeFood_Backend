@@ -4,6 +4,8 @@ const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { getRedis } = require("../../lib/redis");
 const { broadcastToCanteen } = require("../../lib/ws");
+const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
+const { clearCartItemsForStudent } = require("../../lib/cart");
 
 const router = express.Router();
 
@@ -44,6 +46,10 @@ function secondsUntilEndOfDay(date = new Date()) {
 
 function getQueueScore(tokenNumber, enqueueTsMs = Date.now()) {
   return tokenNumber + enqueueTsMs / 1e13;
+}
+
+function getQueueDateFromOrder(order) {
+  return order.scheduledFor || order.createdAt;
 }
 
 function buildQueuePayload(order, item, tokenNumber) {
@@ -96,7 +102,8 @@ async function getOrderQueueInfo(orderId) {
   if (!order || !order.tokenNumber) return null;
 
   const redis = await getRedis();
-  const dateKey = getDateKey(new Date(order.createdAt));
+  const queueDate = getQueueDateFromOrder(order);
+  const dateKey = getDateKey(new Date(queueDate));
   const queues = [];
 
   for (const item of order.items) {
@@ -205,6 +212,47 @@ function ensureLockCommands(redis) {
   }
 }
 
+const PREBOOK_LEAD_MINUTES = Number.parseInt(
+  process.env.PREBOOK_LEAD_MINUTES || "20",
+  10
+);
+
+let prebookIntervalStarted = false;
+
+async function processDuePrebookOrders() {
+  const dueTime = new Date(Date.now() + PREBOOK_LEAD_MINUTES * 60 * 1000);
+  const orders = await prisma.order.findMany({
+    where: {
+      isPrebooked: true,
+      status: "PAID",
+      tokenNumber: null,
+      scheduledFor: { lte: dueTime },
+    },
+    select: { id: true },
+  });
+
+  for (const order of orders) {
+    try {
+      await assignTokenAndQueue(order.id);
+    } catch (error) {
+      console.error("Failed to enqueue prebook order:", error);
+    }
+  }
+}
+
+function startPrebookScheduler() {
+  if (prebookIntervalStarted) return;
+  prebookIntervalStarted = true;
+  const interval = setInterval(() => {
+    processDuePrebookOrders().catch((error) => {
+      console.error("Prebook scheduler error:", error);
+    });
+  }, 60 * 1000);
+  interval.unref();
+}
+
+startPrebookScheduler();
+
 async function assignTokenAndQueue(orderId) {
   const redis = await getRedis();
   ensureLockCommands(redis);
@@ -252,7 +300,8 @@ async function assignTokenAndQueue(orderId) {
       return order.tokenNumber;
     }
 
-    const dateKey = getDateKey();
+    const queueDate = getQueueDateFromOrder(order);
+    const dateKey = getDateKey(new Date(queueDate));
     const tokenKey = `token:${order.canteenId}:${dateKey}`;
 
     const tokenNumber = await redis.incr(tokenKey);
@@ -451,15 +500,46 @@ router.post("/verify", async (req, res) => {
   }
 
   try {
-    const updated = await prisma.order.update({
-      where: { orderId: razorpay_order_id },
-      data: {
-        transactionId: razorpay_payment_id,
-        status: "PAID",
-      },
-      include: { items: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.update({
+        where: { orderId: razorpay_order_id },
+        data: {
+          transactionId: razorpay_payment_id,
+          status: "PAID",
+        },
+        include: {
+          items: { include: { canteenItem: true } },
+          canteen: true,
+          student: true,
+        },
+      });
+      if (order.studentId) {
+        const itemIds = order.items.map((item) => item.canteenItemId);
+        await clearCartItemsForStudent(tx, order.studentId, itemIds);
+      }
+      return order;
     });
     const tokenNumber = await assignTokenAndQueue(updated.id);
+    if (updated.student?.email) {
+      try {
+        await enqueueOrderConfirmationEmail({
+          to: updated.student.email,
+          name: updated.student.name,
+          orderId: updated.orderId,
+          canteenName: updated.canteen?.name || null,
+          items: updated.items.map((item) => ({
+            name: item.canteenItem?.name || "Item",
+            quantity: item.quantity,
+            total: item.total,
+          })),
+          total: updated.total,
+          tokenNumber,
+          scheduledFor: updated.scheduledFor,
+        });
+      } catch (emailError) {
+        console.error("Order email failed:", emailError);
+      }
+    }
     res.json({ status: "verified", order: { ...updated, tokenNumber } });
   } catch (error) {
     console.error("Order verify failed:", error);
@@ -500,11 +580,18 @@ router.get("/student/:studentId", async (req, res) => {
 
   try {
     const orders = await prisma.order.findMany({
-      where: { studentId },
+      where: {
+        OR: [
+          { studentId },
+          { roomMembers: { some: { studentId } } },
+        ],
+      },
       orderBy: { id: "desc" },
+      distinct: ["id"],
       include: {
         canteen: true,
         items: { include: { canteenItem: true } },
+        room: true,
       },
     });
     res.json(orders);
@@ -590,7 +677,7 @@ router.put("/items/:orderItemId/ready", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -645,7 +732,7 @@ router.put("/items/:orderItemId/delivered", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -687,7 +774,7 @@ router.put("/items/:orderItemId/start", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -729,7 +816,7 @@ router.put("/items/:orderItemId/delayed", async (req, res) => {
         where: { id: item.id },
         include: { canteenItem: true },
       });
-      const dateKey = getDateKey(new Date(order.createdAt));
+      const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
       await removeItemFromQueue(order, full, order.tokenNumber, dateKey);
     }
 
@@ -773,7 +860,7 @@ router.put("/items/:orderItemId/requeue", async (req, res) => {
       where: { id: item.id },
       include: { canteenItem: true },
     });
-    const dateKey = getDateKey(new Date(order.createdAt));
+    const dateKey = getDateKey(new Date(getQueueDateFromOrder(order)));
     await enqueueItem(order, full, order.tokenNumber, dateKey);
 
     const queueInfo = await getOrderQueueInfo(item.orderId);
@@ -790,4 +877,4 @@ router.put("/items/:orderItemId/requeue", async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, assignTokenAndQueue };
