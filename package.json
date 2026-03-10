@@ -8,6 +8,8 @@
   "main": "server.js",
   "scripts": {
     "dev": "nodemon server.js",
+    "vercel-build": "prisma generate",
+    "postinstall": "prisma generate",
     "start": "node server.js",
     "build": "prisma generate && next build",
     "test": "jest",
