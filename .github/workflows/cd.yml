@@ -1,5 +1,5 @@
 name: Deploy to VM
-#testvm
+
 on:
   push:
     branches:
