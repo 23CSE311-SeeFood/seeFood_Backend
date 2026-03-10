@@ -1,4 +1,8 @@
 - name: Deploy to VM
+  on:
+    push:
+      branches:
+        - main
   uses: appleboy/ssh-action@v1.0.3
   with:
     host: ${{ secrets.VM_HOST }}
