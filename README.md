@@ -408,7 +408,7 @@ ISC
 
 - Express.js  
 
-- POSTGre 
+- PostgreSQL 
 
 - REST API  
 
