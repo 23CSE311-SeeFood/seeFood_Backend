@@ -13,6 +13,7 @@ jest.mock('../../lib/prisma', () => ({
     findMany: jest.fn(),
     findUnique: jest.fn(),
   },
+  $transaction: jest.fn(),
 }));
 
 jest.mock('../../lib/redis', () => ({
@@ -290,11 +291,14 @@ describe('Orders Queue System', () => {
 
       const orderBeforeQueue = {
         id: 20,
+        orderId: 'order_123',
         canteenId: 4,
         tokenNumber: null,
         createdAt: systemDate,
-        status: 'PAID',
+        status: 'CREATED',
         items,
+        student: { email: 'test@example.com', name: 'Test Student' },
+        canteen: { name: 'Test Canteen' },
       };
 
       const orderWithToken = {
@@ -302,12 +306,21 @@ describe('Orders Queue System', () => {
         tokenNumber: 1,
       };
 
-      prisma.order.update.mockResolvedValue({
+      const updatedOrder = {
         id: 20,
+        orderId: 'order_123',
+        transactionId: 'pay_456',
+        status: 'PAID',
         canteenId: 4,
         tokenNumber: null,
         items,
-      });
+        student: { email: 'test@example.com', name: 'Test Student' },
+        canteen: { name: 'Test Canteen' },
+      };
+
+      prisma.$transaction.mockImplementation(async (fn) => fn(prisma));
+
+      prisma.order.update.mockResolvedValue(updatedOrder);
 
       prisma.order.findUnique
         .mockResolvedValueOnce(orderBeforeQueue) // assignTokenAndQueue fetch
