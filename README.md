@@ -59,6 +59,57 @@ seeFood Backend is the core service that powers the campus canteen management ap
 └── package.json          # Dependencies and scripts
 ```
 
+## System Architecture
+
+The seeFood backend follows a layered architecture pattern with clear separation of concerns:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Client Layer                           │
+│           (Web App & Mobile Application)                    │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ HTTP/REST & WebSocket
+┌──────────────────────▼──────────────────────────────────────┐
+│                   Express.js API Server                     │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Router Layer & Route Handlers                        │ │
+│  │  (Auth, Canteens, Items, Cart, Orders, Payments)     │ │
+│  └────────────────────────────────────────────────────────┘ │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+┌───────▼────┐  ┌─────▼──────┐  ┌────▼──────────┐
+│   Prisma   │  │    Redis   │  │   WebSocket  │
+│    ORM     │  │   Caching  │  │   Handler    │
+└───────┬────┘  └─────┬──────┘  └────┬──────────┘
+        │             │              │
+        │             │              │ Real-time Updates
+┌───────▼────────────▼──────────────────────────┐
+│           Data & Cache Layer                  │
+│     PostgreSQL + Redis + Email Service       │
+└───────┬────────────────────────────────────────┘
+        │
+┌───────▼──────────────────────────────────────┐
+│      External Services Integration           │
+│  • Razorpay (Payments)                      │
+│  • Microsoft Graph API (OAuth)              │
+│  • Azure Service Bus (Email Queue)          │
+└──────────────────────────────────────────────┘
+```
+
+### Architecture Components
+
+- **Client Layer**: Web and mobile applications that consume REST APIs and WebSocket connections
+- **API Server**: Express.js server handling all HTTP requests with middleware for authentication, validation, and CORS
+- **Route Handlers**: Modular route handlers for different features (authentication, canteen management, etc.)
+- **Core Services**: 
+  - Prisma ORM for database operations
+  - Redis for caching and session management
+  - WebSocket handler for real-time notifications
+- **Data Layer**: PostgreSQL database with Prisma migrations and Redis cache
+- **External Integrations**: Third-party services for payments, SSO, and notifications
+
 ## Getting Started
 
 ### Prerequisites
@@ -357,7 +408,7 @@ ISC
 
 - Express.js  
 
-- MySQL  
+- POSTGre 
 
 - REST API  
 
