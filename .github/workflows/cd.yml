@@ -1,5 +1,5 @@
 name: Deploy to VM
-
+#test pipeline
 on:
   push:
     branches:
@@ -21,3 +21,4 @@ jobs:
             git pull origin main
             npm install
             pm2 restart all
+            
