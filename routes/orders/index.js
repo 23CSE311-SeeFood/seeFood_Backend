@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const express = require("express");
+const { DateTime } = require("luxon");
 const Razorpay = require("razorpay");
 const prisma = require("../../lib/prisma");
 const { getRedis } = require("../../lib/redis");
@@ -8,6 +9,7 @@ const { enqueueOrderConfirmationEmail } = require("../../emails/emailQueue");
 const { clearCartItemsForStudent } = require("../../lib/cart");
 
 const router = express.Router();
+const CANTEEN_TIMEZONE = process.env.CANTEEN_TIMEZONE || "Asia/Kolkata";
 
 let razorpayInstance = null;
 
@@ -31,17 +33,55 @@ function parseId(value) {
   return Number.isInteger(num) ? num : null;
 }
 
+function parsePositiveInt(value, fallback) {
+  const num = Number(value);
+  if (!Number.isInteger(num) || num <= 0) return fallback;
+  return num;
+}
+
+function getQueueDisplayStatus(orderStatus, itemStatuses) {
+  if (["CANCELLED", "FAILED", "REFUNDED"].includes(orderStatus)) {
+    return "canceled";
+  }
+
+  if (orderStatus === "DELIVERED" || itemStatuses.every((status) => status === "DELIVERED")) {
+    return "delivered";
+  }
+
+  if (
+    orderStatus === "READY" ||
+    itemStatuses.every((status) => status === "READY" || status === "DELIVERED")
+  ) {
+    return "ready";
+  }
+
+  if (itemStatuses.some((status) => status === "DELAYED")) {
+    return "delayed";
+  }
+
+  if (itemStatuses.some((status) => status === "IN_PROGRESS")) {
+    return "cooking";
+  }
+
+  return "pending";
+}
+
 function getDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
+  return DateTime.fromJSDate(date, { zone: CANTEEN_TIMEZONE }).toFormat("yyyyLLdd");
 }
 
 function secondsUntilEndOfDay(date = new Date()) {
-  const end = new Date(date);
-  end.setHours(23, 59, 59, 999);
-  return Math.max(1, Math.floor((end - date) / 1000));
+  const now = DateTime.fromJSDate(date, { zone: CANTEEN_TIMEZONE });
+  const seconds = Math.floor(now.endOf("day").diff(now, "seconds").seconds);
+  return Math.max(1, seconds);
+}
+
+function getTodayBounds() {
+  const now = DateTime.now().setZone(CANTEEN_TIMEZONE);
+  return {
+    dayStart: now.startOf("day").toJSDate(),
+    dayEnd: now.endOf("day").toJSDate(),
+  };
 }
 
 function getQueueScore(tokenNumber, enqueueTsMs = Date.now()) {
@@ -83,7 +123,8 @@ async function enqueueItem(order, item, tokenNumber, dateKey, enqueueTsMs = Date
   const payload = buildQueuePayload(order, item, tokenNumber);
   const score = getQueueScore(tokenNumber, enqueueTsMs);
   await redis.zAdd(queueKey, [{ score, value: payload }]);
-  await redis.expire(queueKey, secondsUntilEndOfDay());
+  const queueDate = getQueueDateFromOrder(order);
+  await redis.expire(queueKey, secondsUntilEndOfDay(new Date(queueDate)));
 }
 
 async function removeItemFromQueue(order, item, tokenNumber, dateKey) {
@@ -305,9 +346,7 @@ async function assignTokenAndQueue(orderId) {
     const tokenKey = `token:${order.canteenId}:${dateKey}`;
 
     const tokenNumber = await redis.incr(tokenKey);
-    if (tokenNumber === 1) {
-      await redis.expire(tokenKey, secondsUntilEndOfDay());
-    }
+    await redis.expire(tokenKey, secondsUntilEndOfDay(new Date(queueDate)));
 
     for (const item of order.items) {
       await enqueueItem(order, item, tokenNumber, dateKey);
@@ -340,28 +379,37 @@ async function assignTokenAndQueue(orderId) {
 }
 
 router.post("/create", async (req, res) => {
-  const razorpay = getRazorpay();
-  if (!razorpay) {
-    return res.status(500).json({ error: "Razorpay keys not configured" });
-  }
-
   const studentId = parseId(req.body.studentId);
   const cashierId = parseId(req.body.cashierId);
-  if (studentId === null && cashierId === null) {
+  const canteenIdFromBody = parseId(req.body.canteenId);
+  const hasStudentOrder = studentId !== null;
+  const hasCashierOrder = cashierId !== null;
+  const hasOperatorOrder =
+    studentId === null && cashierId === null && canteenIdFromBody !== null;
+
+  if (!hasStudentOrder && !hasCashierOrder && !hasOperatorOrder) {
     return res
       .status(400)
-      .json({ error: "studentId or cashierId must be provided" });
+      .json({ error: "studentId or cashierId or canteenId must be provided" });
   }
-  if (studentId !== null && cashierId !== null) {
-    return res.status(400).json({ error: "Provide only studentId or cashierId" });
+  if ((hasStudentOrder && hasCashierOrder) || (hasStudentOrder && hasOperatorOrder)) {
+    return res
+      .status(400)
+      .json({ error: "Provide either studentId or cashierId or canteenId" });
   }
 
   try {
     let total = 0;
     let canteenId = null;
     let orderItemsData = [];
+    const isDirectPaidOrder = hasCashierOrder || hasOperatorOrder;
 
-    if (studentId !== null) {
+    if (hasStudentOrder) {
+      const razorpay = getRazorpay();
+      if (!razorpay) {
+        return res.status(500).json({ error: "Razorpay keys not configured" });
+      }
+
       const cart = await prisma.cart.findUnique({ where: { studentId } });
       if (!cart) {
         return res.status(404).json({ error: "Cart not found" });
@@ -380,7 +428,7 @@ router.post("/create", async (req, res) => {
         price: item.canteenItem.price,
         total: item.quantity * item.canteenItem.price,
       }));
-    } else {
+    } else if (hasCashierOrder) {
       const items = Array.isArray(req.body.items) ? req.body.items : [];
       if (items.length === 0) {
         return res.status(400).json({ error: "items are required" });
@@ -416,10 +464,53 @@ router.post("/create", async (req, res) => {
         price: calc.priceMap.get(item.canteenItemId),
         total: item.quantity * (calc.priceMap.get(item.canteenItemId) || 0),
       }));
+    } else {
+      const items = Array.isArray(req.body.items) ? req.body.items : [];
+      if (items.length === 0) {
+        return res.status(400).json({ error: "items are required" });
+      }
+
+      const canteen = await prisma.canteen.findUnique({
+        where: { id: canteenIdFromBody },
+      });
+      if (!canteen) {
+        return res.status(404).json({ error: "Canteen not found" });
+      }
+
+      canteenId = canteen.id;
+
+      let calc;
+      try {
+        calc = await calculateItemsTotal(canteenId, items);
+      } catch (err) {
+        if (err.message === "INVALID_ITEM_ID") {
+          return res.status(400).json({ error: "invalid canteenItemId" });
+        }
+        if (err.message === "INVALID_QUANTITY") {
+          return res.status(400).json({ error: "invalid quantity" });
+        }
+        if (err.message === "INVALID_ITEMS") {
+          return res.status(400).json({ error: "items must belong to canteen" });
+        }
+        throw err;
+      }
+
+      total = calc.total;
+      orderItemsData = calc.normalized.map((item) => ({
+        canteenItemId: item.canteenItemId,
+        quantity: item.quantity,
+        price: calc.priceMap.get(item.canteenItemId),
+        total: item.quantity * (calc.priceMap.get(item.canteenItemId) || 0),
+      }));
     }
 
     let razorpayOrder = null;
-    if (studentId !== null) {
+    if (hasStudentOrder) {
+      const razorpay = getRazorpay();
+      if (!razorpay) {
+        return res.status(500).json({ error: "Razorpay keys not configured" });
+      }
+
       const amountPaise = Math.round(total * 100);
       razorpayOrder = await razorpay.orders.create({
         amount: amountPaise,
@@ -433,12 +524,12 @@ router.post("/create", async (req, res) => {
         data: {
           orderId: razorpayOrder
             ? razorpayOrder.id
-            : `cashier_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
-          status: cashierId !== null ? "PAID" : "CREATED",
+            : `counter_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+          status: isDirectPaidOrder ? "PAID" : "CREATED",
           total,
           currency: "INR",
-          studentId,
-          cashierId,
+          studentId: hasStudentOrder ? studentId : null,
+          cashierId: hasCashierOrder ? cashierId : null,
           canteenId,
           items: {
             create: orderItemsData,
@@ -447,7 +538,7 @@ router.post("/create", async (req, res) => {
         include: { items: true },
       });
 
-      if (studentId !== null) {
+      if (hasStudentOrder) {
         const cart = await tx.cart.findUnique({ where: { studentId } });
         if (cart) {
           await tx.cart.update({ where: { id: cart.id }, data: { total } });
@@ -458,7 +549,7 @@ router.post("/create", async (req, res) => {
     });
 
     let tokenNumber = null;
-    if (cashierId !== null) {
+    if (isDirectPaidOrder) {
       tokenNumber = await assignTokenAndQueue(order.id);
     }
 
@@ -620,6 +711,101 @@ router.get("/canteen/:canteenId", async (req, res) => {
     res.json(orders);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+router.get("/canteen/:canteenId/queue", async (req, res) => {
+  const canteenId = parseId(req.params.canteenId);
+  if (canteenId === null) {
+    return res.status(400).json({ error: "canteenId must be an integer" });
+  }
+
+  const limit = parsePositiveInt(req.query.limit, 20);
+
+  try {
+    const activeOrderStatuses = ["PAID", "READY"];
+    const activeItemStatuses = ["PENDING", "IN_PROGRESS", "DELAYED", "READY"];
+    const { dayStart, dayEnd } = getTodayBounds();
+
+    const queueOrders = await prisma.order.findMany({
+      where: {
+        canteenId,
+        tokenNumber: { not: null },
+        status: { in: activeOrderStatuses },
+        OR: [
+          {
+            scheduledFor: {
+              gte: dayStart,
+              lte: dayEnd,
+            },
+          },
+          {
+            scheduledFor: null,
+            createdAt: {
+              gte: dayStart,
+              lte: dayEnd,
+            },
+          },
+        ],
+      },
+      orderBy: [{ tokenNumber: "asc" }, { createdAt: "asc" }],
+      take: limit,
+      include: {
+        student: { select: { name: true } },
+        cashier: { select: { name: true } },
+        items: {
+          where: {
+            status: { in: activeItemStatuses },
+          },
+          include: { canteenItem: { select: { name: true } } },
+        },
+      },
+    });
+
+    const orders = queueOrders
+      .map((order) => {
+        const itemStatuses = order.items.map((item) => item.status);
+        const totalItems = order.items.reduce((sum, item) => sum + item.quantity, 0);
+        const pendingItems = order.items.reduce((sum, item) => {
+          if (item.status === "PENDING" || item.status === "IN_PROGRESS" || item.status === "DELAYED") {
+            return sum + item.quantity;
+          }
+          return sum;
+        }, 0);
+
+        let customer = "Walk-in Customer";
+        if (order.student?.name) {
+          customer = order.student.name;
+        } else if (order.cashier?.name) {
+          customer = `Counter - ${order.cashier.name}`;
+        }
+
+        return {
+          id: order.id,
+          orderId: order.orderId,
+          tokenNumber: order.tokenNumber,
+          orderStatus: order.status,
+          queueStatus: getQueueDisplayStatus(order.status, itemStatuses),
+          customer,
+          createdAt: order.createdAt,
+          totalAmount: order.total,
+          itemCount: totalItems,
+          pendingItemCount: pendingItems,
+          items: order.items.map((item) => ({
+            id: item.id,
+            name: item.canteenItem?.name || "Item",
+            quantity: item.quantity,
+            status: item.status,
+          })),
+        };
+      })
+      .filter((order) => order.itemCount > 0);
+
+    res.json({ canteenId, count: orders.length, orders });
+  } catch (error) {
+    console.error("Failed to fetch canteen queue:", error);
+    const details = process.env.NODE_ENV === "production" ? undefined : error.message;
+    res.status(500).json({ error: "Failed to fetch queue orders", details });
   }
 });
 
